@@ -14,7 +14,12 @@ from cflib.positioning.position_hl_commander import PositionHlCommander
 from cflib.utils import uri_helper
 from lpslib.lopoanchor import LoPoAnchor
 from functools import partial
-# from cflib.localization import 
+# from cflib.localization import []
+
+class CurrentPosition:
+    x=0
+    y=0
+    z=0
 
 URI = uri_helper.uri_from_env(default='radio://0/80/2M/E7E7E7E7E7')
 DEFAULT_HEIGHT=0.5
@@ -24,21 +29,27 @@ csv_file = './csv/loc.csv'
 deck_attached_event = Event()
 
 logging.basicConfig(level=logging.ERROR)
+    
+current_position = CurrentPosition()
 
 # 位置データを受け取るコールバック関数
 def log_pos_callback(csv_writer, timestamp, data, logconf):
-    x = data['kalman.stateX']
-    y = data['kalman.stateY']
-    z = data['kalman.stateZ']
+    x = data['stateEstimate.x']
+    y = data['stateEstimate.y']
+    z = data['stateEstimate.z']
     csv_writer.writerow([timestamp,x,y,z])
+    current_position.x = x
+    current_position.y = y
+    current_position.z = z
+    
     print(f"[{timestamp}] Position -> X: {x:.2f}, Y: {y:.2f}, Z: {z:.2f}")
 
 # ログ設定を行う関数
 def start_position_logging(cf,log_file):    
     log_config = LogConfig(name='KalmanPos', period_in_ms=100)  # 10Hz
-    log_config.add_variable('kalman.stateX', 'float')
-    log_config.add_variable('kalman.stateY', 'float')
-    log_config.add_variable('kalman.stateZ', 'float')
+    log_config.add_variable('stateEstimate.x', 'float')
+    log_config.add_variable('stateEstimate.y', 'float')
+    log_config.add_variable('stateEstimate.z', 'float')
     
     csv_writer = csv.writer(log_file)
     # 追加するコールバック関数に引数を渡すためにpartial使用
@@ -50,23 +61,25 @@ def start_position_logging(cf,log_file):
     print("位置のログ取得を開始しました")
 
 def move_linear_simple(scf):
-    with PositionHlCommander(scf, default_height=DEFAULT_HEIGHT) as mc:
-        time.sleep(2)
+    with PositionHlCommander(
+            scf, 
+            x=current_position.x,
+            y=current_position.y,
+            z=current_position.z,        
+            default_height=DEFAULT_HEIGHT,
+            controller=PositionHlCommander.CONTROLLER_PID) as mc:
         mc.up(0.5)
-        time.sleep(1)
-        mc.forward(0.5)
-        time.sleep(1)
-        mc.turn_left(180)
+        time.sleep(10)
+        # mc.go_to(1,5,0.5)
         # time.sleep(1)
         # mc.forward(0.5)
         # time.sleep(1)
-        mc.down(0.5)
+        # mc.turn_left(180)
+        # time.sleep(1)
+        # mc.forward(0.5)
+        # time.sleep(1)
+        # mc.down(0.5)
 
-def take_off_simple(scf):
-    with MotionCommander(scf, default_height=DEFAULT_HEIGHT) as mc:
-        time.sleep(2)
-        mc.stop()
-        
 def connect_lps_anchor(cf):
 
     lopo = LoPoAnchor(crazyflie=cf)
@@ -112,7 +125,7 @@ if __name__ == '__main__':
 
             # connect_lps_anchor(scf.cf)    
             start_position_logging(scf.cf, log_file)
-            time.sleep(10)
+            time.sleep(5)
 
-            # move_linear_simple(scf)
+            move_linear_simple(scf)
             # take_off_simple(scf)

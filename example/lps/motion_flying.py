@@ -14,6 +14,7 @@ from cflib.positioning.position_hl_commander import PositionHlCommander
 from cflib.utils import uri_helper
 from lpslib.lopoanchor import LoPoAnchor
 from functools import partial
+from service.pose_logger import PoseLogger
 # from cflib.localization import 
 
 URI = uri_helper.uri_from_env(default='radio://0/80/2M/E7E7E7E7E7')
@@ -27,36 +28,30 @@ logging.basicConfig(level=logging.ERROR)
 
 # 位置データを受け取るコールバック関数
 def log_pos_callback(csv_writer, timestamp, data, logconf):
-    x = data['kalman.stateX']
-    y = data['kalman.stateY']
-    z = data['kalman.stateZ']
-    csv_writer.writerow([timestamp,x,y,z])
-    print(f"[{timestamp}] Position -> X: {x:.2f}, Y: {y:.2f}, Z: {z:.2f}")
+    print()
+    # csv_writer.writerow([timestamp,x,y,z])
+    # print(f"[{timestamp}] Position -> X: {x:.2f}, Y: {y:.2f}, Z: {z:.2f}")
 
 # ログ設定を行う関数
 def start_position_logging(cf,log_file):    
-    log_config = LogConfig(name='KalmanPos', period_in_ms=100)  # 10Hz
-    log_config.add_variable('kalman.stateX', 'float')
-    log_config.add_variable('kalman.stateY', 'float')
-    log_config.add_variable('kalman.stateZ', 'float')
+    pose_logger = PoseLogger(cf)
+    position_logger = pose_logger.position
     
     csv_writer = csv.writer(log_file)
-    # 追加するコールバック関数に引数を渡すためにpartial使用
-    cb = partial(log_pos_callback,csv_writer)
-
-    cf.log.add_config(log_config)
-    log_config.data_received_cb.add_callback(cb)
-    log_config.start()
+    cb = partial(log_pos_callback,csv_writer,)
+    position_logger.data_received_cb.add_callback(cb)
+    
+    print(position_logger)
     print("位置のログ取得を開始しました")
 
 def move_linear_simple(scf):
     with PositionHlCommander(scf, default_height=DEFAULT_HEIGHT) as mc:
         time.sleep(2)
         mc.up(0.5)
-        time.sleep(1)
-        mc.forward(0.5)
-        time.sleep(1)
-        mc.turn_left(180)
+        # time.sleep(1)
+        # mc.forward(0.5)
+        # time.sleep(1)
+        # mc.turn_left(180)
         # time.sleep(1)
         # mc.forward(0.5)
         # time.sleep(1)
@@ -96,9 +91,6 @@ def param_deck_flow(_, value_str):
 
 if __name__ == '__main__':
     cflib.crtp.init_drivers()
-    # print(cflib.crtp.scan_interfaces())
-    # print(cflib.crtp.get_interfaces_status())
-    # print(cflib.crtp.get_link_driver(URI))
     with open(csv_file, mode='w', newline = '') as log_file:
         with SyncCrazyflie(URI, cf=Crazyflie(rw_cache='./cache')) as scf:
 
