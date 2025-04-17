@@ -19,7 +19,7 @@ from functools import partial
 URI = uri_helper.uri_from_env(default='radio://0/80/2M/E7E7E7E7E7')
 DEFAULT_HEIGHT=0.5
 yml_pass = '../locoposition_locate.yaml'
-csv_file = './loc.csv'
+csv_file = './csv/loc.csv'
 
 deck_attached_event = Event()
 
