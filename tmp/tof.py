@@ -1,0 +1,130 @@
+import logging
+import sys
+import time
+from threading import Event
+
+import cflib.crtp
+from cflib.crazyflie import Crazyflie
+from cflib.crazyflie.log import LogConfig
+from cflib.crazyflie.syncCrazyflie import SyncCrazyflie
+from cflib.positioning.motion_commander import MotionCommander
+from cflib.utils import uri_helper
+
+import csv
+
+URI = uri_helper.uri_from_env(default='radio://0/80/2M/E7E7E7E7E7')
+DEFAULT_HEIGHT = 0.5
+
+deck_attached_event = Event()
+logging.basicConfig(level=logging.INFO)
+
+# --------------------------
+# ログ用変数とCSVファイル
+log_variables = [
+    "vl11.tick",
+    "vl11.s0",
+    "vl11.s1",
+    "vl11.s2",
+    "vl11.s3",
+    "vl11.s4",
+    "vl11.s5",
+    "vl11.s6",
+    "vl11.s7",
+    "vl11.s8",
+    "vl11.s9",
+    "vl11.s10",
+]
+LOG_FILE = "crazyflie_log.csv"
+
+# --------------------------
+# データをCSVに保存する関数
+def write_csv_header():
+    with open(LOG_FILE, mode='w', newline='') as f:
+        writer = csv.writer(f)
+        writer.writerow(["timestamp"] + log_variables)
+
+def log_data_callback(timestamp, data, logconf):
+    row = [timestamp] + [data.get(var, '') for var in log_variables]
+    with open(LOG_FILE, mode='a', newline='') as f:
+        writer = csv.writer(f)
+        writer.writerow(row)
+
+def log_error_callback(logconf, msg):
+    print("Log error:", msg)
+
+# --------------------------
+def param_deck_flow(name, value_str):
+    # cflib passes (name, value_str) to param callbacks
+    try:
+        value = int(value_str)
+    except Exception:
+        value = 0
+    if value:
+        print('Deck is attached! (param {} = {})'.format(name, value_str))
+    else:
+        print('Deck is NOT attached! (param {} = {})'.format(name, value_str))
+    deck_attached_event.set()
+
+# --------------------------
+if __name__ == '__main__':
+    cflib.crtp.init_drivers()
+
+    with SyncCrazyflie(URI, cf=Crazyflie(rw_cache='./cache')) as scf:
+        # Register deck param callback early so we catch the current value when params arrive
+        scf.cf.param.add_update_callback(group='deck', name='bcFlow2', cb=param_deck_flow)
+
+        # Enable hardware driver inside firmware (vl11)
+        scf.cf.param.set_value('vl11.enable', '1')
+        # If you want to use real sensor (not test data), uncomment:
+        # scf.cf.param.set_value('vl11.testGen', '0')
+
+        # Wait for the param system to update; either via callback or short sleep
+        # We'll wait up to 1.0s for deck callback to set the event
+        if not deck_attached_event.wait(timeout=1.0):
+            # If callback didn't fire, attempt to read param directly (correct API usage)
+            try:
+                # get_value expects a single string "group.name"
+                val_enable = scf.cf.param.get_value('vl11.enable')
+                val_testgen = scf.cf.param.get_value('vl11.testGen')
+                print("vl11.enable =", val_enable)
+                print("vl11.testGen =", val_testgen)
+            except Exception as e:
+                print("Could not read vl11 params directly:", e)
+
+            # Also enumerate deck params to help debugging
+            try:
+                for name in scf.cf.param.get_params():
+                    if name.startswith('deck.'):
+                        print("deck param:", name)
+            except Exception:
+                # Some cflib versions might not expose get_params; ignore if not available
+                pass
+
+            # give one more short chance for the deck callback to arrive
+            time.sleep(0.2)
+
+        if not deck_attached_event.is_set():
+            print('No flow deck detected!')
+            # Decide: exit or continue. We'll exit since deck expected.
+            sys.exit(1)
+
+        # --------------------------
+        # ログ設定
+        log_conf = LogConfig(name='Logging', period_in_ms=100)
+        for var in log_variables:
+            log_conf.add_variable(var)
+
+        scf.cf.log.add_config(log_conf)
+        log_conf.data_received_cb.add_callback(log_data_callback)
+        log_conf.error_cb.add_callback(log_error_callback)
+        write_csv_header()  # ヘッダー書き込み
+        log_conf.start()
+
+        # --------------------------
+        # 離陸処理
+        scf.cf.platform.send_arming_request(True)
+        time.sleep(5.0)
+        print("Success!")
+        # --------------------------
+        # ログ停止
+        log_conf.stop()
