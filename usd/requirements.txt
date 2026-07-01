@@ -1,0 +1,15 @@
+# usd/ 以下の Python スクリプト (log_to_csv.py, plot_csv.py,
+# depth_map.py, sensor_gif.py, trajectory_gif.py) が必要とするパッケージ。
+#
+# 一括インストール:
+#   pip install -r requirements.txt
+#
+# 用途:
+#   numpy      … 数値計算 (全スクリプト)
+#   pandas     … CSV入出力 (log_to_csv.py, plot_csv.py, depth_map.py の静的表示)
+#   matplotlib … グラフ/3D描画 (plot_csv.py, depth_map.py, trajectory_gif.py)
+#   Pillow     … GIF書き出し (depth_map.py, sensor_gif.py, trajectory_gif.py)
+numpy
+pandas
+matplotlib
+Pillow

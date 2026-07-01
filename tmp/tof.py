@@ -123,7 +123,7 @@ if __name__ == '__main__':
         # --------------------------
         # 離陸処理
         scf.cf.platform.send_arming_request(True)
-        time.sleep(5.0)
+        time.sleep(10.0)
         print("Success!")
         # --------------------------
         # ログ停止
