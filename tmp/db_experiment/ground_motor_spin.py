@@ -8,8 +8,8 @@ from cflib.utils import uri_helper
 
 URI = uri_helper.uri_from_env(default='radio://0/80/2M/E7E7E7E7E7')
 
-WAIT_BEFORE_SPIN = 5.0   # [s] 接続後、プロペラを回転させるまでの待機時間
-SPIN_TIME = 20.0         # [s] プロペラを回転させる時間
+WAIT_BEFORE_SPIN = 10.0   # [s] 接続後、プロペラを回転させるまでの待機時間
+SPIN_TIME = 10.0         # [s] プロペラを回転させる時間
 # プロペラの出力（0-65535）。離陸しない程度の低い値にすること。
 # 機体・バッテリー残量によって浮き上がる閾値は変わるため、
 # 初めて実行する際はより小さい値から試して安全な範囲を確認すること。
@@ -39,11 +39,13 @@ def spin_propellers(scf):
     finally:
         # 途中でエラーが発生した場合も含め、必ずモータを停止させる
         print('プロペラを停止します...')
-        cf.param.set_value('motorPowerSet.m1', '0')
-        cf.param.set_value('motorPowerSet.m2', '0')
-        cf.param.set_value('motorPowerSet.m3', '0')
-        cf.param.set_value('motorPowerSet.m4', '0')
-        cf.param.set_value('motorPowerSet.enable', '0')
+        for name in ('m1', 'm2', 'm3', 'm4'):
+            cf.param.set_value(f'motorPowerSet.{name}', str(0))
+            time.sleep(0.1)
+
+        cf.param.set_value('motorPowerSet.enable', str(0))
+        # param の送信は非同期なので、切断前にパケットが機体へ届くのを待つ
+        time.sleep(0.5)
 
 
 if __name__ == '__main__':

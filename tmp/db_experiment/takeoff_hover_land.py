@@ -11,10 +11,10 @@ from cflib.utils import uri_helper
 
 URI = uri_helper.uri_from_env(default='radio://0/80/2M/E7E7E7E7E7')
 
-WAIT_BEFORE_TAKEOFF = 5.0   # [s] 接続後、離陸するまでの待機時間
-TARGET_HEIGHT = 1.0         # [m] 目標高度
-TAKEOFF_TIME = 1.0          # [s] 離陸にかける時間
-HOVER_TIME = 15.0           # [s] ホバリングを続ける時間
+WAIT_BEFORE_TAKEOFF = 3.0   # [s] 接続後、離陸するまでの待機時間
+TARGET_HEIGHT = 0.7       # [m] 目標高度
+TAKEOFF_TIME = 2.0          # [s] 離陸にかける時間
+HOVER_TIME = 5.0           # [s] ホバリングを続ける時間
 TAKEOFF_VELOCITY = TARGET_HEIGHT / TAKEOFF_TIME  # 1.0 m/sで上昇し、ちょうど1秒で1mに到達させる
 
 deck_attached_event = Event()
@@ -37,6 +37,11 @@ def fly(scf):
         print(f'{WAIT_BEFORE_TAKEOFF:.0f}秒待機します...')
         time.sleep(WAIT_BEFORE_TAKEOFF)
 
+        # Crazyflie 2.1 Brushless はアーミングしないとモータが回らない
+        print('アーミングします...')
+        scf.cf.platform.send_arming_request(True)
+        time.sleep(1.0)
+
         print(f'{TAKEOFF_TIME:.0f}秒かけて高度{TARGET_HEIGHT:.1f}mまで上昇します...')
         mc.take_off(height=TARGET_HEIGHT, velocity=TAKEOFF_VELOCITY)
 
@@ -45,7 +50,11 @@ def fly(scf):
     finally:
         # 途中でエラーが発生した場合も含め、必ず着陸させる
         print('着陸します...')
-        mc.land()
+        mc.land(velocity=TAKEOFF_VELOCITY * 2)
+
+        # 着陸後はディスアームしてモータを確実に止める
+        scf.cf.platform.send_arming_request(False)
+        time.sleep(0.5)
 
 
 if __name__ == '__main__':

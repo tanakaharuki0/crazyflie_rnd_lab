@@ -12,11 +12,12 @@ from cflib.utils import uri_helper
 URI = uri_helper.uri_from_env(default='radio://0/80/2M/E7E7E7E7E7')
 
 WAIT_BEFORE_TAKEOFF = 5.0   # [s] 接続後、離陸するまでの待機時間
-TARGET_HEIGHT = 1.0         # [m] 目標高度
+TARGET_HEIGHT = 1.2         # [m] 目標高度
 TAKEOFF_TIME = 1.0          # [s] 離陸にかける時間
-HOVER_TIME = 5.0            # [s] ホバリングを続ける時間（前進の前後で共通）
+HOVER_TIME = 9.0            # [s] ホバリングを続ける時間（前進の前後で共通）
 FORWARD_DISTANCE = 2.0      # [m] 前進する距離
-FORWARD_TIME = 5.0          # [s] 前進にかける時間
+FORWARD_TIME = 2.5          # [s] 前進にかける時間
+HOVER_TIME2 = 10.0 - FORWARD_TIME  # [s] 前進後のホバリング時間
 
 TAKEOFF_VELOCITY = TARGET_HEIGHT / TAKEOFF_TIME    # 1.0 m/sで上昇し、ちょうど1秒で1mに到達させる
 FORWARD_VELOCITY = FORWARD_DISTANCE / FORWARD_TIME  # 0.4 m/sで前進し、ちょうど5秒で2m進ませる
@@ -49,13 +50,12 @@ def fly(scf):
 
         print(f'{FORWARD_TIME:.0f}秒かけて{FORWARD_DISTANCE:.1f}m前進します...')
         mc.forward(FORWARD_DISTANCE, velocity=FORWARD_VELOCITY)
-
         print(f'{HOVER_TIME:.0f}秒間ホバリングします...')
-        time.sleep(HOVER_TIME)
+        time.sleep(HOVER_TIME2)
     finally:
         # 途中でエラーが発生した場合も含め、必ず着陸させる
         print('着陸します...')
-        mc.land()
+        mc.land(velocity=TAKEOFF_VELOCITY * 2)
 
 
 if __name__ == '__main__':
