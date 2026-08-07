@@ -45,7 +45,8 @@ D_MAX_MM = 4000.0       # 有効とみなす距離の上限
 RANSAC_ITERS = 60
 RANSAC_THRESH_MM = 20.0   # 平面までの許容残差
 MIN_INLIERS = 6           # 16点中この数以上のインライアが必要
-PLANARITY_EPS = 0.02      # λ3/(λ1+λ2+λ3) の閾値
+PLANARITY_EPS = 0.006     # λ3/(λ1+λ2+λ3) の閾値 (tof_odometry.c と同値)
+GATE_DEG = 1.0            # ジャイロ整合チェックの閾値[deg]。0で無効
 
 # ---- センサー取り付け (docs/vl53l8cx-position.md, 位置[mm]/角度[deg]) ----
 # 光軸はセンサー座標系の +x、+y が左、+z が上。yaw-pitch-roll (Z-Y-X) でボディ系へ。
@@ -236,27 +237,95 @@ def solve_translation(Ns, dd, w, rcond=0.05):
 # ============================================================
 # メイン処理
 # ============================================================
-def extract_planes(df, sensors, rng):
-    """全フレーム・全センサーの平面抽出。planes[f][s] = dict or None。"""
-    cols = {s: [f"vl53l8cx_s{s}.d{i}" for i in range(16)] for s in sensors}
-    for s, c in cols.items():
-        missing = [x for x in c if x not in df.columns]
+def sensor_arrays(df, sensors):
+    """センサーごとの 16ゾーン距離 (N,16) を取り出す。"""
+    arrs = {}
+    for s in sensors:
+        cols = [f"vl53l8cx_s{s}.d{i}" for i in range(16)]
+        missing = [x for x in cols if x not in df.columns]
         if missing:
             sys.exit(f"sensor{s} の列がありません: {missing[:3]} ...")
+        arrs[s] = df[cols].to_numpy(dtype=float)
+    return arrs
 
-    arrs = {s: df[cols[s]].to_numpy(dtype=float) for s in sensors}
+
+# 1スイープとみなす時間幅 [s]。測距周期 (約200ms) より十分短くとる。
+SWEEP_WINDOW_S = 0.10
+
+
+def tof_frames(arrs, sensors, t):
+    """
+    ToF の1スイープを1フレームとして、その index と、各フレームでどのセンサーが
+    更新されたかのマスクを返す。
+
+    ログは 50Hz 前後だが ToF の測距は 5Hz なので、同じ距離データが約10行続く。
+    全行をフレームとして扱うと「一つ前の計測」が自分自身になり Δ=0 だらけになる。
+    さらに1スイープの SPI 読み出しは数行 (約40ms) に分散する (例: [0,1,2]→[5]→[6,7])
+    ので、単に「どれかが更新された行」を拾うとフレームが分裂し、1フレームあたり
+    1〜3個のセンサーしか揃わない。SWEEP_WINDOW_S 以内の更新は同一スイープとして
+    まとめ、そのスイープの最終行 (全センサーの新しい値が入っている行) を採る。
+    """
+    n = len(next(iter(arrs.values())))
+    changed = {s: np.zeros(n, dtype=bool) for s in sensors}
+    for s in sensors:
+        d = np.abs(np.diff(arrs[s], axis=0)).sum(axis=1) != 0
+        changed[s][1:] = d
+        changed[s][0] = True          # 先頭は初回取得とみなす
+
+    any_changed = np.zeros(n, dtype=bool)
+    for s in sensors:
+        any_changed |= changed[s]
+    rows = np.flatnonzero(any_changed)
+    if len(rows) == 0:
+        sys.exit("ToF の距離データが一度も更新されていません。")
+
+    # 時間的に近い更新行を1スイープにまとめる
+    brk = np.flatnonzero(np.diff(t[rows]) > SWEEP_WINDOW_S)
+    starts = np.concatenate([[0], brk + 1])
+    ends = np.concatenate([brk, [len(rows) - 1]])
+
+    idx = rows[ends]                                  # 各スイープの最終行
+    fresh = {s: np.zeros(len(idx), dtype=bool) for s in sensors}
+    for k, (a, b) in enumerate(zip(starts, ends)):
+        for s in sensors:
+            fresh[s][k] = changed[s][rows[a]:rows[b] + 1].any()
+    return idx, fresh
+
+
+def extract_planes(df, sensors, rng, arrs=None, idx=None, fresh=None):
+    """全フレーム・全センサーの平面抽出。planes[f][s] = dict or None。
+
+    idx/fresh を渡すと、そのセンサーの測距が更新されたフレームだけを計算する
+    (更新のないフレームは None = 古いデータを使い回さない)。
+    """
+    if arrs is None:
+        arrs = sensor_arrays(df, sensors)
+    if idx is None:
+        idx = np.arange(len(df))
+        fresh = {s: np.ones(len(idx), dtype=bool) for s in sensors}
+
     planes = []
-    for f in range(len(df)):
+    for f, row in enumerate(idx):
         frame = {}
         for s in sensors:
-            P, _ = points_body(arrs[s][f], s)
+            if not fresh[s][f]:
+                frame[s] = None
+                continue
+            P, _ = points_body(arrs[s][row], s)
             frame[s] = fit_plane_ransac(P, rng) if len(P) >= MIN_INLIERS else None
         planes.append(frame)
     return planes
 
 
-def run_odometry(planes, sensors, timestamps):
-    """連続フレーム間で ΔR / Δt を推定し、累積姿勢・位置を返す。"""
+def run_odometry(planes, sensors, timestamps, att=None, gate_deg=GATE_DEG):
+    """連続する「そのセンサー自身の計測」間で ΔR / Δt を推定し、累積を返す。
+
+    att: (F,3) の (yaw,pitch,roll)[deg]。渡すとファームウェアと同じ
+         ジャイロ整合チェックを行い、
+           - 個々の法線がジャイロ予測と gate_deg 以上ずれた対応を捨てる
+           - まとめた ΔR がジャイロと gate_deg 以上ずれたら ΔR ごと捨てて
+             ジャイロの回転で代替する
+    """
     F = len(planes)
     out = dict(
         t=np.asarray(timestamps, dtype=float) / 1000.0,   # [s]
@@ -265,6 +334,9 @@ def run_odometry(planes, sensors, timestamps):
         rank_R=np.zeros(F, dtype=int),
         rank_t=np.zeros(F, dtype=int),
         n_pairs=np.zeros(F, dtype=int),
+        n_gated=np.zeros(F, dtype=int),
+        rot_err=np.full(F, np.nan),
+        rot_src=np.zeros(F, dtype=int),   # 0:なし 1:ToF 2:ジャイロ(乖離) 3:ジャイロ(対応なし)
         ypr=np.zeros((F, 3)),
         pos=np.zeros((F, 3)),
         plane_d={s: np.full(F, np.nan) for s in sensors},
@@ -280,37 +352,82 @@ def run_odometry(planes, sensors, timestamps):
                 out["plane_n"][s][f] = pl["n"]
                 out["planarity"][s][f] = pl["planarity"]
 
+    # 姿勢 (world_R_body) をフレームごとに用意
+    R_att = None
+    if att is not None:
+        R_att = [rot_ypr(*att[f]) for f in range(F)]
+
+    # センサーごとに「一つ前の自分の計測」を保持する
+    prev = {s: None for s in sensors}      # (plane, R_att or None)
     R_cum = np.eye(3)
     p_cum = np.zeros(3)
-    for f in range(1, F):
-        pairs = [s for s in sensors
-                 if planes[f - 1][s] is not None and planes[f][s] is not None]
+    R_last = R_att[0] if R_att is not None else None
+
+    for f in range(F):
+        pairs, n_gated = [], 0
+        for s in sensors:
+            cur = planes[f][s]
+            if cur is None:
+                continue
+            pv = prev[s]
+            if pv is not None and pv[0] is not None:
+                ok = True
+                if gate_deg > 0 and R_att is not None and pv[1] is not None:
+                    # 壁が固定なら n_curr = R_curr^T R_prev n_prev
+                    n_pred = R_att[f].T @ pv[1] @ pv[0]["n"]
+                    c = float(np.clip(n_pred @ cur["n"], -1.0, 1.0))
+                    if np.degrees(np.arccos(c)) >= gate_deg:
+                        ok = False
+                        n_gated += 1
+                if ok:
+                    pairs.append((s, pv[0], cur))
+            prev[s] = (cur, R_att[f] if R_att is not None else None)
+
         out["n_pairs"][f] = len(pairs)
-        if not pairs:
-            out["ypr"][f] = rot_to_ypr(R_cum)
-            out["pos"][f] = p_cum
-            continue
+        out["n_gated"][f] = n_gated
 
-        N_prev = np.array([planes[f - 1][s]["n"] for s in pairs])
-        N_curr = np.array([planes[f][s]["n"] for s in pairs])
-        # 重み: 平面性が良いほど (λ3 が小さいほど) 大きい
-        w = np.array([1.0 / max(planes[f][s]["planarity"], 1e-6) for s in pairs])
-        w /= w.sum()
+        # ジャイロによる機体回転 (前回このループを通ったとき → 今回)
+        dR_gyro = None
+        if R_att is not None and R_last is not None:
+            dR_gyro = R_last.T @ R_att[f]      # body_prev_R_body_curr
 
-        dR, rank_R = kabsch_normals(N_prev, N_curr, w)
-        out["rank_R"][f] = rank_R
-        if rank_R < 2:            # 法線が1方向のみ → 回転は不定なので採用しない
-            dR = np.eye(3)
-        out["dR_ypr"][f] = rot_to_ypr(dR)
+        dRb, src = None, 0
+        if pairs:
+            N_prev = np.array([p[1]["n"] for p in pairs])
+            N_curr = np.array([p[2]["n"] for p in pairs])
+            w = np.array([1.0 / max(p[2]["planarity"], 1e-6) for p in pairs])
+            w /= w.sum()
 
-        # 平面までの垂直距離は原点まわりの回転では不変なので、ΔR と分離して解ける
-        dd = np.array([planes[f][s]["d"] - planes[f - 1][s]["d"] for s in pairs])
-        dt, rank_t, _ = solve_translation(N_prev, dd, w)
-        out["dt"][f] = dt
-        out["rank_t"][f] = rank_t
+            dR, rank_R = kabsch_normals(N_prev, N_curr, w)
+            out["rank_R"][f] = rank_R
+            if rank_R < 2:        # 法線が1方向のみ → 回転は不定なので採用しない
+                dR = np.eye(3)
+            # Kabsch は法線を prev→curr に写す回転 (= body_curr_R_body_prev) を返す。
+            # 機体自身の回転はその逆なので転置し、ジャイロと同じ向きに揃える。
+            dRb = dR.T
+            src = 1
 
-        R_cum = R_cum @ dR
-        p_cum = p_cum + R_cum @ dt
+            if dR_gyro is not None and gate_deg > 0:
+                c = float(np.clip((np.trace(dRb.T @ dR_gyro) - 1.0) / 2.0, -1.0, 1.0))
+                out["rot_err"][f] = np.degrees(np.arccos(c))
+                if out["rot_err"][f] >= gate_deg:
+                    dRb, src = dR_gyro, 2
+
+            dd = np.array([p[2]["d"] - p[1]["d"] for p in pairs])
+            dt, rank_t, _ = solve_translation(N_prev, dd, w)
+            out["dt"][f] = dt
+            out["rank_t"][f] = rank_t
+            p_cum = p_cum + R_cum @ dt      # 姿勢を進める前の R_cum で回す
+        elif dR_gyro is not None:
+            dRb, src = dR_gyro, 3
+
+        if dRb is not None:
+            out["dR_ypr"][f] = rot_to_ypr(dRb)
+            R_cum = R_cum @ dRb
+        out["rot_src"][f] = src
+
+        if R_att is not None:
+            R_last = R_att[f]
         out["ypr"][f] = rot_to_ypr(R_cum)
         out["pos"][f] = p_cum
 
@@ -473,8 +590,15 @@ def plot(res, sensors, df, out_path, tmax=None):
 def main():
     ap = argparse.ArgumentParser(description="超低密度ToF点群からの移動量・回転量抽出")
     ap.add_argument("csv", help="log_to_csv.py が出力したCSV (例: log39.csv)")
-    ap.add_argument("-s", "--sensors", type=int, nargs="+", default=[0, 1, 2],
-                    help="使用するセンサー番号 (既定: 0 1 2)")
+    ap.add_argument("-s", "--sensors", type=int, nargs="+",
+                    default=[0, 1, 2, 5, 6, 7],
+                    help="使用するセンサー番号 (既定: 0 1 2 5 6 7 = 水平リング)")
+    ap.add_argument("--eps", type=float, default=None,
+                    help=f"平面性スコアの閾値 (既定: {PLANARITY_EPS})")
+    ap.add_argument("--gate-deg", type=float, default=GATE_DEG,
+                    help="ジャイロ整合チェックの閾値[deg]。0で無効")
+    ap.add_argument("--no-dedup", action="store_true",
+                    help="ToF更新行での間引きをせず、CSVの全行をフレームとして扱う")
     ap.add_argument("-o", "--output", default=None, help="出力PNGパス")
     ap.add_argument("--csv-out", default=None, help="推定結果のCSV出力パス")
     ap.add_argument("--seed", type=int, default=0, help="RANSACの乱数シード")
@@ -491,9 +615,32 @@ def main():
         path = cand
     df = pd.read_csv(path)
 
+    if args.eps is not None:
+        globals()["PLANARITY_EPS"] = args.eps
+
     rng = np.random.default_rng(args.seed)
-    planes = extract_planes(df, args.sensors, rng)
-    res = run_odometry(planes, args.sensors, df["timestamp"].to_numpy())
+    arrs = sensor_arrays(df, args.sensors)
+    if args.no_dedup:
+        idx = np.arange(len(df))
+        fresh = {s: np.ones(len(df), dtype=bool) for s in args.sensors}
+    else:
+        idx, fresh = tof_frames(arrs, args.sensors,
+                                df["timestamp"].to_numpy(float) / 1000.0)
+
+    planes = extract_planes(df, args.sensors, rng, arrs, idx, fresh)
+
+    # ジャイロ整合チェック用の姿勢 (yaw, pitch, roll)[deg]
+    att = None
+    acols = ("stabilizer.yaw", "stabilizer.pitch", "stabilizer.roll")
+    if args.gate_deg > 0 and all(c in df.columns for c in acols):
+        att = df[list(acols)].to_numpy(dtype=float)[idx]
+    elif args.gate_deg > 0:
+        print("警告: stabilizer.* が無いのでジャイロ整合チェックは無効です",
+              file=sys.stderr)
+
+    df = df.iloc[idx].reset_index(drop=True)
+    res = run_odometry(planes, args.sensors, df["timestamp"].to_numpy(),
+                       att=att, gate_deg=args.gate_deg)
 
     # サマリ
     print(f"入力: {path}  ({len(df)} フレーム)")
@@ -506,6 +653,10 @@ def main():
     print(f"  Δt のランク 3/2/1/0  : "
           f"{(res['rank_t']==3).sum()}/{(res['rank_t']==2).sum()}/"
           f"{(res['rank_t']==1).sum()}/{(res['rank_t']==0).sum()}")
+    src = res["rot_src"]
+    print(f"  ΔR の出所 ToF/ジャイロ(乖離)/ジャイロ(対応なし)/なし : "
+          f"{(src==1).sum()}/{(src==2).sum()}/{(src==3).sum()}/{(src==0).sum()}")
+    print(f"  ゲートで捨てた対応 : {res['n_gated'].sum()} 件")
     print(f"  累積回転 (yaw,pitch,roll) [deg] : {res['ypr'][-1].round(2)}")
     print(f"  累積移動 (x,y,z) [mm]           : {res['pos'][-1].round(1)}")
 
