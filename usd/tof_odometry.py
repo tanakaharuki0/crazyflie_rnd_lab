@@ -44,9 +44,10 @@ D_MAX_MM = 4000.0       # 有効とみなす距離の上限
 # ---- 平面抽出パラメータ ----
 RANSAC_ITERS = 60
 RANSAC_THRESH_MM = 20.0   # 平面までの許容残差
-MIN_INLIERS = 6           # 16点中この数以上のインライアが必要
+MIN_INLIERS = 8           # 16点中この数以上のインライアが必要
 PLANARITY_EPS = 0.006     # λ3/(λ1+λ2+λ3) の閾値 (tof_odometry.c と同値)
-GATE_DEG = 1.0            # ジャイロ整合チェックの閾値[deg]。0で無効
+GATE_DEG = 2.0            # ジャイロ整合チェックの閾値[deg]。0で無効
+LARGE_ERR_DEG = 2.0      # ジャイロとのズレがこれ以上の点はグラフ上に点でマーキングする[deg]
 
 # ---- センサー取り付け (docs/vl53l8cx-position.md, 位置[mm]/角度[deg]) ----
 # 光軸はセンサー座標系の +x、+y が左、+z が上。yaw-pitch-roll (Z-Y-X) でボディ系へ。
@@ -158,11 +159,12 @@ def pca_plane(P):
 def fit_plane_ransac(P, rng):
     """RANSAC で外れ値を除いてから PCA 平面フィット。
 
-    Returns: dict(n, d, planarity, n_inliers, rms) または None。
+    Returns: (dict(n, d, planarity, n_inliers, rms) または None, reason)
+    reason: "ok" / "too_few_points" / "ransac_fail" / "planarity_fail"
     """
     N = len(P)
     if N < MIN_INLIERS:
-        return None
+        return None, "too_few_points"
 
     best_inl = None
     for _ in range(RANSAC_ITERS):
@@ -181,7 +183,7 @@ def fit_plane_ransac(P, rng):
                 break
 
     if best_inl is None or best_inl.sum() < MIN_INLIERS:
-        return None
+        return None, "ransac_fail"
 
     # インライアで最終 PCA (2回リファイン)
     inl = best_inl
@@ -195,10 +197,10 @@ def fit_plane_ransac(P, rng):
 
     n, d, planarity, _ = pca_plane(P[inl])
     if planarity > PLANARITY_EPS:
-        return None
+        return None, "planarity_fail"
 
     rms = float(np.sqrt(np.mean((P[inl] @ n - d) ** 2)))
-    return dict(n=n, d=d, planarity=planarity, n_inliers=int(inl.sum()), rms=rms)
+    return dict(n=n, d=d, planarity=planarity, n_inliers=int(inl.sum()), rms=rms), "ok"
 
 
 # ============================================================
@@ -214,6 +216,59 @@ def kabsch_normals(N_prev, N_curr, w):
     # 観測された法線方向の張る空間のランク (2未満なら回転は一意でない)
     rank = int((S > 1e-6 * max(S[0], 1e-12)).sum())
     return R, rank
+
+
+def solve_yaw_only(pairs, att_f):
+    """法線が1方向しかない (rank<2) ときに、生ジャイロの pitch/roll を既知
+    として yaw だけを厳密に解く。
+
+    n_pred(curr) = R_prev^T @ R_curr @ n_prev (実測との符号一致を確認済みの式)
+    を変形すると R_prev @ n_curr = R_curr @ n_prev となる。
+    Rz(psi_p)Ry(theta_p)Rx(phi_p)@n_curr = Rz(psi_c)Ry(theta_c)Rx(phi_c)@n_prev
+    の両辺に Rz(-psi_p) を左からかけると
+
+        Ry(theta_p)Rx(phi_p)@n_curr = Rz(psi_c-psi_p) @ Ry(theta_c)Rx(phi_c)@n_prev
+
+    となり、Rz は (x,y) 成分だけを回すので Δψ=psi_c-psi_p を閉形式で解ける
+    (pitch/roll は prev・curr 各時刻ごとに個別の値を使ってよく、途中で
+    pitch/roll が変化していても幾何学的に厳密に成り立つ)。
+    左辺は「前回の pitch/roll」を「今回の法線」に、右辺は「今回の
+    pitch/roll」を「前回の法線」に適用する組み合わせになる点に注意
+    (ランダム回転での数値検証でこの組み合わせのみ正しいΔψを再現することを確認済み)。
+
+    pairs: run_odometry() の pairs (各要素 (s, prev_plane, cur_plane, R_att_prev))
+    att_f: 現在フレームの (yaw,pitch,roll)[deg] (生ジャイロ積分)
+
+    Returns: 現在フレームの姿勢行列 (Rz(psi_curr_est)@Ry(pitch)@Rx(roll)、
+    psi_curr_est は各ペアからの推定の重み付き円環平均) または None。
+    """
+    psi_est, weights = [], []
+    for _s, prev_plane, cur_plane, R_att_prev in pairs:
+        psi_p, theta_p, phi_p = rot_to_ypr(R_att_prev)
+
+        # 前回の pitch/roll を今回の法線に、今回の pitch/roll を前回の法線に適用
+        m_A = rot_ypr(0.0, theta_p, phi_p) @ cur_plane["n"]
+        m_B = rot_ypr(0.0, att_f[1], att_f[2]) @ prev_plane["n"]
+
+        # 法線がほぼ真上/真下 (水平成分がほぼ0) だと yaw を観測できない
+        if np.hypot(m_A[0], m_A[1]) < 1e-3 or np.hypot(m_B[0], m_B[1]) < 1e-3:
+            continue
+
+        dpsi = np.degrees(np.arctan2(m_A[1], m_A[0]) - np.arctan2(m_B[1], m_B[0]))
+        psi_est.append(psi_p + dpsi)
+        weights.append(1.0 / max(cur_plane["planarity"], 1e-6))
+
+    if not psi_est:
+        return None
+
+    psi_est = np.radians(np.asarray(psi_est))
+    weights = np.asarray(weights)
+    weights = weights / weights.sum()
+    sin_mean = np.sum(weights * np.sin(psi_est))
+    cos_mean = np.sum(weights * np.cos(psi_est))
+    psi_curr = np.degrees(np.arctan2(sin_mean, cos_mean))
+
+    return rot_ypr(psi_curr, att_f[1], att_f[2])
 
 
 def solve_translation(Ns, dd, w, rcond=0.05):
@@ -297,6 +352,12 @@ def extract_planes(df, sensors, rng, arrs=None, idx=None, fresh=None):
 
     idx/fresh を渡すと、そのセンサーの測距が更新されたフレームだけを計算する
     (更新のないフレームは None = 古いデータを使い回さない)。
+
+    Returns: (planes, stats, planarity_fail_frames, planarity_ok_frames)。
+    stats[s] は fit_plane_ransac() を実際に呼んだ回数の内訳
+    (too_few_points/ransac_fail/planarity_fail/ok)。
+    planarity_fail_frames / planarity_ok_frames は、平面性スコアで棄却/採用に
+    なったフレーム番号 f のリスト (センサーごとに複数回入りうる)。
     """
     if arrs is None:
         arrs = sensor_arrays(df, sensors)
@@ -304,6 +365,9 @@ def extract_planes(df, sensors, rng, arrs=None, idx=None, fresh=None):
         idx = np.arange(len(df))
         fresh = {s: np.ones(len(idx), dtype=bool) for s in sensors}
 
+    stats = {s: dict(too_few_points=0, ransac_fail=0, planarity_fail=0, ok=0) for s in sensors}
+    planarity_fail_frames = []
+    planarity_ok_frames = []
     planes = []
     for f, row in enumerate(idx):
         frame = {}
@@ -312,9 +376,15 @@ def extract_planes(df, sensors, rng, arrs=None, idx=None, fresh=None):
                 frame[s] = None
                 continue
             P, _ = points_body(arrs[s][row], s)
-            frame[s] = fit_plane_ransac(P, rng) if len(P) >= MIN_INLIERS else None
+            pl, reason = fit_plane_ransac(P, rng)
+            frame[s] = pl
+            stats[s][reason] += 1
+            if reason == "planarity_fail":
+                planarity_fail_frames.append(f)
+            elif reason == "ok":
+                planarity_ok_frames.append(f)
         planes.append(frame)
-    return planes
+    return planes, stats, planarity_fail_frames, planarity_ok_frames
 
 
 def run_odometry(planes, sensors, timestamps, att=None, gate_deg=GATE_DEG):
@@ -330,18 +400,30 @@ def run_odometry(planes, sensors, timestamps, att=None, gate_deg=GATE_DEG):
     out = dict(
         t=np.asarray(timestamps, dtype=float) / 1000.0,   # [s]
         dR_ypr=np.full((F, 3), np.nan),
+        # gyro代用で上書きされる前の、Kabsch が実際に計算した生のΔR[deg]
+        # (pairs が非空だったフレームは棄却の有無に関わらず必ず入る)
+        kabsch_dR_ypr=np.full((F, 3), np.nan),
+        # kabsch_dR_ypr が実際に表している「前回 Kabsch 成立時」からのフレーム数
+        kabsch_ref_gap=np.full(F, np.nan),
         dt=np.full((F, 3), np.nan),
         rank_R=np.zeros(F, dtype=int),
         rank_t=np.zeros(F, dtype=int),
         n_pairs=np.zeros(F, dtype=int),
         n_gated=np.zeros(F, dtype=int),
         rot_err=np.full(F, np.nan),
-        rot_src=np.zeros(F, dtype=int),   # 0:なし 1:ToF 2:ジャイロ(乖離) 3:ジャイロ(対応なし)
+        rot_src=np.zeros(F, dtype=int),   # 0:なし 1:ToF 2:ジャイロ(乖離) 3:ジャイロ(対応なし) 4:ToF(yawのみ)
         ypr=np.zeros((F, 3)),
         pos=np.zeros((F, 3)),
         plane_d={s: np.full(F, np.nan) for s in sensors},
         plane_n={s: np.full((F, 3), np.nan) for s in sensors},
         planarity={s: np.full(F, np.nan) for s in sensors},
+        # そのセンサーの「前回の自分の計測」との法線変化がジャイロ整合チェックで
+        # 棄却された (gate_deg 以上ずれた) フレームかどうか
+        gated={s: np.zeros(F, dtype=bool) for s in sensors},
+        # そのセンサー・フレームでの法線ペアのジャイロ予測とのズレ角[deg] (計算されなければ NaN)
+        pair_err={s: np.full(F, np.nan) for s in sensors},
+        # ① 法線ペアごとのジャイロ予測とのズレ角[deg] (棄却されたものも含め全て、集計用)
+        pair_gate_err=[],
     )
 
     for f in range(F):
@@ -357,11 +439,20 @@ def run_odometry(planes, sensors, timestamps, att=None, gate_deg=GATE_DEG):
     if att is not None:
         R_att = [rot_ypr(*att[f]) for f in range(F)]
 
-    # センサーごとに「一つ前の自分の計測」を保持する
-    prev = {s: None for s in sensors}      # (plane, R_att or None)
+    # センサーごとに直近2回分の自分の計測を保持する (prev1=直前, prev2=前々回)。
+    # 「前回」の更新は棄却の有無に関わらず常に行う。直前のデータとの比較が
+    # 棄却された場合は、前々回のデータとも比較してみて、それが gate_deg 未満
+    # なら棄却せず採用する (1回の飛び値だけを理由に切り捨てず、もう1段階だけ
+    # 遡って救済する)。
+    prev1 = {s: None for s in sensors}     # (plane, R_att or None)
+    prev2 = {s: None for s in sensors}
     R_cum = np.eye(3)
     p_cum = np.zeros(3)
     R_last = R_att[0] if R_att is not None else None
+    R_kabsch_prev1 = R_att[0] if R_att is not None else None   # 前回 Kabsch が成立した時の姿勢
+    R_kabsch_prev2 = R_att[0] if R_att is not None else None   # 前々回 Kabsch が成立した時の姿勢
+    R_cum_at_kabsch_prev1 = np.eye(3)   # 前回 Kabsch 成立時点での R_cum のスナップショット
+    kabsch_prev1_frame = 0                                      # 前回 Kabsch が成立したフレーム番号
 
     for f in range(F):
         pairs, n_gated = [], 0
@@ -369,29 +460,53 @@ def run_odometry(planes, sensors, timestamps, att=None, gate_deg=GATE_DEG):
             cur = planes[f][s]
             if cur is None:
                 continue
-            pv = prev[s]
-            if pv is not None and pv[0] is not None:
-                ok = True
-                if gate_deg > 0 and R_att is not None and pv[1] is not None:
-                    # 壁が固定なら n_curr = R_curr^T R_prev n_prev
-                    n_pred = R_att[f].T @ pv[1] @ pv[0]["n"]
-                    c = float(np.clip(n_pred @ cur["n"], -1.0, 1.0))
-                    if np.degrees(np.arccos(c)) >= gate_deg:
-                        ok = False
+            pv1 = prev1[s]
+            ok, chosen = True, None
+            if pv1 is not None and pv1[0] is not None:
+                chosen = pv1
+                if gate_deg > 0 and R_att is not None and pv1[1] is not None:
+                    # 壁が固定なら n_curr = R_prev^T R_curr n_prev
+                    # (R_att は world_R_body。ズレ角の検証で OLDER.T@NEWER の順が
+                    # 実測と符号一致することを確認済み。逆順だと符号が反転する)
+                    n_pred1 = pv1[1].T @ R_att[f] @ pv1[0]["n"]
+                    c1 = float(np.clip(n_pred1 @ cur["n"], -1.0, 1.0))
+                    err1 = np.degrees(np.arccos(c1))
+
+                    pv2 = prev2[s]
+                    err2 = None
+                    if pv2 is not None and pv2[0] is not None and pv2[1] is not None:
+                        n_pred2 = pv2[1].T @ R_att[f] @ pv2[0]["n"]
+                        c2 = float(np.clip(n_pred2 @ cur["n"], -1.0, 1.0))
+                        err2 = np.degrees(np.arccos(c2))
+
+                    # ヒストグラム集計用には、前回・前々回どちらとの比較が
+                    # 小さいか (=より整合していた方) を採用する
+                    pair_err_deg = err1 if err2 is None else min(err1, err2)
+                    out["pair_gate_err"].append(pair_err_deg)
+                    out["pair_err"][s][f] = pair_err_deg
+
+                    if err1 < gate_deg:
+                        ok, chosen = True, pv1
+                    elif err2 is not None and err2 < gate_deg:
+                        ok, chosen = True, pv2
+                    else:
+                        ok, chosen = False, None
                         n_gated += 1
-                if ok:
-                    pairs.append((s, pv[0], cur))
-            prev[s] = (cur, R_att[f] if R_att is not None else None)
+                        out["gated"][s][f] = True
+                if ok and chosen is not None:
+                    pairs.append((s, chosen[0], cur, chosen[1]))
+            prev2[s] = prev1[s]
+            prev1[s] = (cur, R_att[f] if R_att is not None else None)
 
         out["n_pairs"][f] = len(pairs)
         out["n_gated"][f] = n_gated
 
-        # ジャイロによる機体回転 (前回このループを通ったとき → 今回)
+        # ジャイロによる機体回転 (前回このループを通ったとき → 今回、フォールバック代用用)
         dR_gyro = None
         if R_att is not None and R_last is not None:
             dR_gyro = R_last.T @ R_att[f]      # body_prev_R_body_curr
 
-        dRb, src = None, 0
+        dRb, src, since_ref = None, 0, False
         if pairs:
             N_prev = np.array([p[1]["n"] for p in pairs])
             N_curr = np.array([p[2]["n"] for p in pairs])
@@ -400,74 +515,166 @@ def run_odometry(planes, sensors, timestamps, att=None, gate_deg=GATE_DEG):
 
             dR, rank_R = kabsch_normals(N_prev, N_curr, w)
             out["rank_R"][f] = rank_R
-            if rank_R < 2:        # 法線が1方向のみ → 回転は不定なので採用しない
-                dR = np.eye(3)
-            # Kabsch は法線を prev→curr に写す回転 (= body_curr_R_body_prev) を返す。
-            # 機体自身の回転はその逆なので転置し、ジャイロと同じ向きに揃える。
-            dRb = dR.T
-            src = 1
+            yaw_only = False
+            if rank_R < 2:
+                # 法線が1方向のみ → 3自由度の回転は不定だが、生ジャイロの
+                # pitch/roll を既知として yaw だけは厳密に解ける (solve_yaw_only)
+                R_curr_hybrid = solve_yaw_only(pairs, att[f]) if att is not None else None
+                if R_curr_hybrid is not None:
+                    ref = R_kabsch_prev1 if R_kabsch_prev1 is not None else R_att[f]
+                    dRb = ref.T @ R_curr_hybrid
+                    yaw_only = True
+                else:
+                    dRb = np.eye(3)
+            else:
+                # Kabsch は法線を prev→curr に写す回転 (= body_curr_R_body_prev) を返す。
+                # 機体自身の回転はその逆なので転置し、ジャイロと同じ向きに揃える。
+                dRb = dR.T
+            src = 4 if yaw_only else 1
+            out["kabsch_dR_ypr"][f] = rot_to_ypr(dRb)   # 棄却前の生の Kabsch(または yaw のみ)ΔR
 
-            if dR_gyro is not None and gate_deg > 0:
-                c = float(np.clip((np.trace(dRb.T @ dR_gyro) - 1.0) / 2.0, -1.0, 1.0))
-                out["rot_err"][f] = np.degrees(np.arccos(c))
-                if out["rot_err"][f] >= gate_deg:
+            # dRb と比較するジャイロ回転は「前回 Kabsch が成立したフレーム」を起点
+            # にする (① の pv1 と同じ考え方。R_last=1ループ前だと、pairs が
+            # 疎にしか成立しないセンサー構成では dRb が表す実時間幅とズレる)。
+            # 前回起点での比較が棄却された場合は、① と同様に前々回 Kabsch 起点
+            # とも比較し、gate_deg 未満なら棄却せず採用する。
+            # 棄却して代用する値は R_cum の1フレーム分の更新に使うので、比較に
+            # だけ dR_gyro_kabsch* を使い、代用そのものは他フレームと同じ1フレ
+            # ーム分の dR_gyro を使う (でないと途中フレームで既に積算済みの回転
+            # を二重に積むことになる)。
+            if R_att is not None and gate_deg > 0:
+                accepted = R_kabsch_prev1 is None
+                if R_kabsch_prev1 is not None:
+                    dR_gyro_kabsch1 = R_kabsch_prev1.T @ R_att[f]
+                    c1 = float(np.clip((np.trace(dRb.T @ dR_gyro_kabsch1) - 1.0) / 2.0, -1.0, 1.0))
+                    err1 = np.degrees(np.arccos(c1))
+
+                    err2 = None
+                    if R_kabsch_prev2 is not None:
+                        dR_gyro_kabsch2 = R_kabsch_prev2.T @ R_att[f]
+                        c2 = float(np.clip((np.trace(dRb.T @ dR_gyro_kabsch2) - 1.0) / 2.0, -1.0, 1.0))
+                        err2 = np.degrees(np.arccos(c2))
+
+                    # ヒストグラム集計用には、前回・前々回どちらとの比較が
+                    # 小さいか (=より整合していた方) を採用する
+                    out["rot_err"][f] = err1 if err2 is None else min(err1, err2)
+
+                    if err1 < gate_deg:
+                        accepted = True
+                    elif err2 is not None and err2 < gate_deg:
+                        accepted = True
+                if not accepted:
                     dRb, src = dR_gyro, 2
+
+            # src が 1 か 4 のままなら dRb は「前回 Kabsch 成立時からの累積回転」を
+            # 表す (途中フレームの単発ジャイロ更新とは意味が違う)。R_cum に単純に
+            # 掛け算すると、間のフレームで既にジャイロ代用として積算した分と
+            # 二重に積むことになるため、前回 Kabsch 成立時点の R_cum のスナップ
+            # ショットを起点として置き換える。
+            since_ref = src in (1, 4)
 
             dd = np.array([p[2]["d"] - p[1]["d"] for p in pairs])
             dt, rank_t, _ = solve_translation(N_prev, dd, w)
             out["dt"][f] = dt
             out["rank_t"][f] = rank_t
             p_cum = p_cum + R_cum @ dt      # 姿勢を進める前の R_cum で回す
+
+            if R_att is not None:
+                # 今回 Kabsch が成立したので次回・次々回の起点を更新
+                R_kabsch_prev2 = R_kabsch_prev1
+                R_kabsch_prev1 = R_att[f]
         elif dR_gyro is not None:
             dRb, src = dR_gyro, 3
 
         if dRb is not None:
             out["dR_ypr"][f] = rot_to_ypr(dRb)
-            R_cum = R_cum @ dRb
+            if since_ref:
+                R_cum = R_cum_at_kabsch_prev1 @ dRb
+            else:
+                R_cum = R_cum @ dRb
         out["rot_src"][f] = src
+
+        if pairs:
+            # 次に Kabsch が成立したときの起点として、更新後の R_cum を保存
+            R_cum_at_kabsch_prev1 = R_cum
 
         if R_att is not None:
             R_last = R_att[f]
         out["ypr"][f] = rot_to_ypr(R_cum)
         out["pos"][f] = p_cum
 
+    out["pair_gate_err"] = np.asarray(out["pair_gate_err"], dtype=float)
     return out
 
 
-GYRO_COLS = ("gyro.x", "gyro.y", "gyro.z")   # roll/pitch/yaw の角速度 [deg/s]
+GYRO_COLS = ("gyro.x", "gyro.y", "gyro.z")   # roll/pitch/yaw の角速度 [deg/s] (機体角速度 p,q,r)
 GYRO_BIAS_SEC = 0.5                          # 先頭この秒数の平均をバイアスとして除去
 
 
-def gyro_reference(df, t):
-    """ジャイロ角速度から比較用の Δ回転[deg/frame] と累積回転[deg] を作る。
+def rodrigues(v):
+    """回転ベクトル v [rad] (軸=方向, ノルム=回転角) を 3x3 回転行列に変換する。"""
+    theta = float(np.linalg.norm(v))
+    if theta < 1e-12:
+        return np.eye(3)
+    k = v / theta
+    K = np.array([[0.0, -k[2], k[1]],
+                  [k[2], 0.0, -k[0]],
+                  [-k[1], k[0], 0.0]])
+    return np.eye(3) + np.sin(theta) * K + (1.0 - np.cos(theta)) * (K @ K)
 
-    gyro.x/y/z = roll/pitch/yaw 方向の角速度 [deg/s]。
-    ToF 側と同じ (yaw, pitch, roll) の順に並べ替えて返す。列が無ければ None。
+
+def gyro_reference(df, t):
+    """生ジャイロ角速度 (gyro.x/y/z) から Δ回転[deg/frame] と累積回転[deg] を作る。
+
+    gyro.x/y/z はボディ座標系 roll/pitch/yaw 軸まわりの機体角速度 (p,q,r) その
+    ものなので、各ステップの回転ベクトル v=(p,q,r)*dt をロドリゲスの公式で
+    回転行列に変換し、姿勢を行列の逐次合成 R[f] = R[f-1] @ Exp(v) で積分する
+    (yaw,pitch,roll を別々に単純積分する方法は機体角速度とオイラー角速度を
+    混同しており、姿勢が傾くほど軸間カップリングの誤差が乗る)。
+    ステップ角は通常数度以下で、ステップ数もToFフレーム数程度 (数百) なので
+    増える計算量は無視できる。
+
+    stabilizer.yaw/pitch/roll (EKF等の姿勢推定値) は無補正のまま使うとドリフト
+    が大きく信頼できないことがわかったため、run_odometry() の「ジャイロ代用」
+    (rot_src 2/3) にも、この生ジャイロ積分を att として渡して使う。
+    つまりこの関数の出力が「代用元」と「比較対象」を兼ねる唯一のジャイロ信号
+    になる。列が無ければ None。
     """
     if not all(c in df.columns for c in GYRO_COLS):
         return None
 
-    # [roll, pitch, yaw] rate → [yaw, pitch, roll] rate
-    rate = df[list(GYRO_COLS)].to_numpy(dtype=float)[:, ::-1]
+    rate_body = df[list(GYRO_COLS)].to_numpy(dtype=float)   # (p,q,r) = (roll,pitch,yaw)軸 [deg/s]
 
     # 静止しているはずの先頭区間の平均をバイアスとして差し引く
     n_bias = max(int(np.searchsorted(t - t[0], GYRO_BIAS_SEC)), 1)
-    rate = rate - np.nanmean(rate[:n_bias], axis=0)
+    rate_body = rate_body - np.nanmean(rate_body[:n_bias], axis=0)
 
-    dt_s = np.diff(t, prepend=t[0])                   # 各フレームの経過時間 [s]
-    d_ypr = rate * dt_s[:, None]                      # [deg/frame]
-    return dict(d_ypr=d_ypr, ypr=np.nancumsum(d_ypr, axis=0))
+    dt_s = np.diff(t, prepend=t[0])                        # 各フレームの経過時間 [s]
+    v = np.radians(rate_body) * dt_s[:, None]              # 各ステップの回転ベクトル [rad]
+
+    F = len(t)
+    R = np.eye(3)
+    ypr = np.zeros((F, 3))
+    d_ypr = np.zeros((F, 3))
+    for f in range(F):
+        R_step = rodrigues(v[f])
+        d_ypr[f] = rot_to_ypr(R_step)      # [deg/frame] (表示用)
+        R = R @ R_step
+        ypr[f] = rot_to_ypr(R)             # 累積姿勢 [deg]
+    return dict(d_ypr=d_ypr, ypr=ypr)
 
 
-def plot(res, sensors, df, out_path, tmax=None):
+def plot(res, sensors, df, out_path, tmax=None, gate_deg=GATE_DEG):
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
+    import matplotlib.colors as mcolors
     import matplotlib.font_manager as fm
 
     # 日本語ラベル用フォント (無ければ既定のまま)
     available = {f.name for f in fm.fontManager.ttflist}
-    for cand in ("Noto Sans CJK JP", "IPAGothic", "TakaoGothic", "VL Gothic"):
+    for cand in ("Noto Sans CJK JP", "IPAGothic", "TakaoGothic", "VL Gothic",
+                 "Yu Gothic", "Meiryo", "MS Gothic", "BIZ UDGothic"):
         if cand in available:
             plt.rcParams["font.family"] = cand
             break
@@ -476,7 +683,7 @@ def plot(res, sensors, df, out_path, tmax=None):
     t = res["t"]
     gyro = gyro_reference(df, t)
     t = t - t[0]
-    fig, ax = plt.subplots(4, 2, figsize=(15, 14), sharex=True)
+    fig, ax = plt.subplots(4, 2, figsize=(13, 12), sharex=True)
     ypr_colors = ["tab:blue", "tab:orange", "tab:green"]
 
     # (0,0) 各センサーの平面距離 d_i
@@ -496,9 +703,35 @@ def plot(res, sensors, df, out_path, tmax=None):
     ax[0, 1].legend(fontsize=8)
 
     # (1,0) フレーム間回転量
-    for i, name in enumerate(["yaw", "pitch", "roll"]):
+    # yaw: Kabsch が計算した生の値 (棄却の有無に関わらず pairs があれば全て)
+    # を点で全部プロットし、ジャイロとのズレ (rot_err) を色で表す。
+    # ズレ = gate_deg で黄色、それより小さいと緑→青、大きいほど赤に近づく。
+    err_cmap = mcolors.LinearSegmentedColormap.from_list(
+        "err_cmap", ["blue", "green", "yellow", "orange", "red"])
+    if gate_deg > 0:
+        err_norm = mcolors.TwoSlopeNorm(vcenter=gate_deg, vmin=0.0, vmax=2.0 * gate_deg)
+    else:
+        err_norm = mcolors.Normalize(vmin=0.0, vmax=1.0)
+
+    yaw_kabsch = res["kabsch_dR_ypr"][:, 0]
+    has_kabsch = ~np.isnan(yaw_kabsch) & ~np.isnan(res["rot_err"])
+    if has_kabsch.any():
+        sc = ax[1, 0].scatter(t[has_kabsch], yaw_kabsch[has_kabsch], s=15,
+                               c=res["rot_err"][has_kabsch], cmap=err_cmap,
+                               norm=err_norm, edgecolors="k", linewidths=0.3,
+                               zorder=5, label="Kabsch Δyaw (生値)")
+        fig.colorbar(sc, ax=ax[1, 0], pad=0.01, label="ジャイロとのズレ [deg]")
+
+    # gyroではなく実際に Kabsch (ToF) の結果が採用されたフレーム (rot_src==1) は
+    # pitch/roll では従来通り青色の点でマーキングする
+    kabsch_ok = res["rot_src"] == 1
+    for i, name in zip((1, 2), ("pitch", "roll")):
         ax[1, 0].plot(t, res["dR_ypr"][:, i], lw=1, color=ypr_colors[i],
                       label=f"ToF Δ{name}")
+        if kabsch_ok.any():
+            ax[1, 0].scatter(t[kabsch_ok], res["dR_ypr"][kabsch_ok, i], s=15,
+                              color="tab:blue", edgecolors="k", linewidths=0.3,
+                              zorder=5)
     if gyro is not None:
         for i, name in enumerate(["yaw", "pitch", "roll"]):
             ax[1, 0].plot(t, gyro["d_ypr"][:, i], lw=0.8, ls="--", alpha=0.6,
@@ -516,13 +749,22 @@ def plot(res, sensors, df, out_path, tmax=None):
     ax[1, 1].legend(fontsize=8)
 
     # (2,0) 累積姿勢
-    for i, name in enumerate(["yaw", "pitch", "roll"]):
+    # yaw は法線から推定できた区間 (rot_src==1 または rank不足でも yaw だけ
+    # 推定できた rot_src==4) は青、ジャイロで代替した区間は赤で塗り分ける
+    tof_src = (res["rot_src"] == 1) | (res["rot_src"] == 4)
+    yaw = res["ypr"][:, 0]
+    yaw_tof = np.where(tof_src, yaw, np.nan)
+    yaw_gyro_sub = np.where(~tof_src, yaw, np.nan)
+    ax[2, 0].plot(t, yaw_tof, lw=1.2, color=ypr_colors[0], label="ToF yaw")
+    ax[2, 0].plot(t, yaw_gyro_sub, lw=1.2, color="red", label="ToF yaw (gyro代替)")
+    for i, name in zip((1, 2), ("pitch", "roll")):
         ax[2, 0].plot(t, res["ypr"][:, i], lw=1.2, color=ypr_colors[i],
                       label=f"ToF {name}")
     if gyro is not None:
         for i, name in enumerate(["yaw", "pitch", "roll"]):
             ax[2, 0].plot(t, gyro["ypr"][:, i], lw=1.0, ls="--", alpha=0.75,
                           color=ypr_colors[i], label=f"gyro {name}")
+    ax[2, 0].axhline(180, color="k", lw=0.5)
     ax[2, 0].set_ylabel("cumulative rotation [deg]")
     ax[2, 0].set_title("累積回転量 (ΔR の積分)"
                        + (" と ジャイロ積分の比較" if gyro is not None else ""))
@@ -550,10 +792,27 @@ def plot(res, sensors, df, out_path, tmax=None):
     ax[3, 0].legend(fontsize=8)
 
     # (3,1) 法線の向き (yaw成分) — 壁に対する相対角度
-    for s in sensors:
+    # 平面抽出/平面性スコアで棄却された区間 (前後どちらかが NaN) は元の実装通り
+    # 描画しない (隣接フレーム同士でなければ線をつながない)。
+    # ジャイロ整合チェックで棄却された遷移 (res["gated"][s]) は点線にする。
+    prop_colors = plt.rcParams["axes.prop_cycle"].by_key()["color"]
+    for i, s in enumerate(sensors):
         n = res["plane_n"][s]
-        ax[3, 1].plot(t, np.degrees(np.arctan2(n[:, 1], n[:, 0])), lw=1,
-                      label=f"sensor{s}")
+        az = np.degrees(np.arctan2(n[:, 1], n[:, 0]))
+        color = prop_colors[i % len(prop_colors)]
+        ax[3, 1].plot([], [], lw=1, color=color, label=f"sensor{s}")
+        ok = ~np.isnan(az)
+        for f in range(1, len(az)):
+            if not (ok[f - 1] and ok[f]):
+                continue
+            ls = "--" if res["gated"][s][f] else "-"
+            ax[3, 1].plot(t[f - 1:f + 1], az[f - 1:f + 1], lw=1, ls=ls, color=color)
+        # ジャイロとのズレが LARGE_ERR_DEG 以上のフレームのみ点でマーキングする
+        # (採用された(棄却されなかった)点は線のみで表し、マーカーは描かない)
+        big = res["pair_err"][s] >= LARGE_ERR_DEG
+        if big.any():
+            ax[3, 1].scatter(t[big], az[big], s=25, color=color,
+                              edgecolors="k", linewidths=0.5, zorder=5)
     ax[3, 1].set_ylabel("normal azimuth [deg]")
     ax[3, 1].set_xlabel("time [s]")
     ax[3, 1].set_title("抽出された法線ベクトルの方位角 (ボディ座標系)")
@@ -585,6 +844,211 @@ def plot(res, sensors, df, out_path, tmax=None):
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
     fig.savefig(out_path, dpi=130)
     print(f"グラフを保存: {out_path}")
+
+
+HIST_LO, HIST_HI, HIST_WIDTH = 0.0, 10.0, 0.2   # ズレ角ヒストグラムのビン設定 [deg]
+
+
+def _hist_with_overflow(data, lo=HIST_LO, hi=HIST_HI, width=HIST_WIDTH):
+    """[lo,hi) を width 刻みでヒストグラム化し、hi 以上は末尾のビンにまとめる
+    (ズレ角は arccos 由来で常に0以上なので下側のはみ出しビンは作らない)。
+
+    Returns: (bin中心の配列, 度数の配列, はみ出しビンかどうかのbool配列)
+    """
+    data = np.asarray(data, dtype=float)
+    data = data[np.isfinite(data)]
+    edges = np.arange(lo, hi + width / 2, width)
+    counts, _ = np.histogram(data, bins=edges)
+    n_over = int(np.sum(data >= hi))
+    centers = (edges[:-1] + edges[1:]) / 2.0
+    centers_full = np.concatenate([centers, [hi + width]])
+    counts_full = np.concatenate([counts, [n_over]])
+    is_overflow = np.concatenate([np.zeros(len(centers), dtype=bool), [True]])
+    return centers_full, counts_full, is_overflow
+
+
+def plot_gate_histograms(res, out_path):
+    """① 法線ペアのジャイロ不整合ズレ、② KabschのΔRのジャイロ乖離のヒストグラム。
+
+    横軸: 生じたズレ [deg] (0〜10を0.2度刻み、10度以上は末尾のビンにまとめる)
+    縦軸: そのズレ幅で観測された回数
+    """
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    fig, ax = plt.subplots(1, 2, figsize=(10.5, 4))
+
+    specs = [
+        (ax[0], res["pair_gate_err"], "tab:blue",
+         "① 法線ペアのジャイロ不整合ズレの分布", "normal-pair angle error vs gyro [deg]"),
+        (ax[1], res["rot_err"], "tab:orange",
+         "② KabschのΔRのジャイロ乖離の分布", "Kabsch ΔR angle error vs gyro [deg]"),
+    ]
+    for a, data, color, title, xlabel in specs:
+        centers, counts, is_overflow = _hist_with_overflow(data)
+        colors = np.where(is_overflow, "0.6", color)
+        a.bar(centers, counts, width=HIST_WIDTH * 0.9, color=colors)
+        a.axvline(GATE_DEG, color="k", ls="--", lw=0.8, label=f"gate_deg={GATE_DEG:g}")
+        a.set_xlabel(xlabel)
+        a.set_ylabel("count")
+        a.set_title(title)
+        a.set_xticks(list(np.arange(HIST_LO, HIST_HI - 1e-9, 1.0)) + [HIST_HI + HIST_WIDTH])
+        a.set_xticklabels([f"{v:g}" for v in np.arange(HIST_LO, HIST_HI - 1e-9, 1.0)]
+                           + [f">={HIST_HI:g}"])
+        a.grid(alpha=0.3)
+        a.legend(fontsize=8)
+
+    fig.tight_layout()
+    os.makedirs(os.path.dirname(out_path), exist_ok=True)
+    fig.savefig(out_path, dpi=130)
+    print(f"ズレ角ヒストグラムを保存: {out_path}")
+
+
+TIME_HIST_LO, TIME_HIST_HI, TIME_HIST_WIDTH = 0.0, 60.0, 2.0   # 棄却時刻ヒストグラムのビン設定 [s]
+
+
+def plot_rejection_time_histograms(res, planarity_fail_t, planarity_ok_t, out_path):
+    """3種類の棄却/採用が発生した時刻のヒストグラム (上段:棄却, 下段:採用)。
+
+    - 平面性スコア (fit_plane_ransac が planarity_fail/ok を返した時刻)
+    - ① 法線ペアのジャイロ乖離 (res["gated"] / 比較したが棄却されなかったもの)
+    - ② KabschのΔRのジャイロ乖離 (res["rot_src"]==2 / ==1)
+
+    横軸: 時刻[s] (0〜60sを2s刻み)、縦軸: その時間帯での回数
+    """
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    t = res["t"] - res["t"][0]
+
+    pca_gate_t = np.concatenate([t[res["gated"][s]] for s in res["gated"]]) \
+        if res["gated"] else np.array([])
+    pca_ok_t = np.concatenate([
+        t[~np.isnan(res["pair_err"][s]) & ~res["gated"][s]] for s in res["gated"]
+    ]) if res["gated"] else np.array([])
+    kabsch_gate_t = t[res["rot_src"] == 2]
+    kabsch_ok_t = t[(res["rot_src"] == 1) | (res["rot_src"] == 4)]
+
+    edges = np.arange(TIME_HIST_LO, TIME_HIST_HI + TIME_HIST_WIDTH / 2, TIME_HIST_WIDTH)
+
+    fig, ax = plt.subplots(2, 3, figsize=(14, 7.0))
+    specs = [
+        (ax[0, 0], np.asarray(planarity_fail_t, dtype=float), "tab:purple",
+         "平面性スコアによる棄却"),
+        (ax[0, 1], np.asarray(pca_gate_t, dtype=float), "tab:blue",
+         "① 法線ペアのジャイロ乖離による棄却"),
+        (ax[0, 2], np.asarray(kabsch_gate_t, dtype=float), "tab:orange",
+         "② KabschのΔRのジャイロ乖離による棄却"),
+        (ax[1, 0], np.asarray(planarity_ok_t, dtype=float), "tab:purple",
+         "平面性スコアで採用 (棄却されなかった)"),
+        (ax[1, 1], np.asarray(pca_ok_t, dtype=float), "tab:blue",
+         "① 法線ペアで採用 (棄却されなかった)"),
+        (ax[1, 2], np.asarray(kabsch_ok_t, dtype=float), "tab:orange",
+         "② KabschのΔRで採用 (棄却されなかった)"),
+    ]
+    for a, times, color, title in specs:
+        a.hist(times, bins=edges, color=color, edgecolor="k", linewidth=0.3)
+        a.set_xlabel("time [s]")
+        a.set_ylabel("count")
+        a.set_title(title)
+        a.set_xlim(TIME_HIST_LO, TIME_HIST_HI)
+        a.xaxis.set_major_locator(matplotlib.ticker.MultipleLocator(10))
+        a.grid(alpha=0.3)
+
+    fig.tight_layout()
+    os.makedirs(os.path.dirname(out_path), exist_ok=True)
+    fig.savefig(out_path, dpi=130)
+    print(f"棄却時刻ヒストグラムを保存: {out_path}")
+
+
+def plot_normal_azimuth_per_sensor(res, sensors, out_dir, base, gate_deg=GATE_DEG, att=None):
+    """センサーごとに法線ベクトルの方位角グラフを別々のPNGとして保存する。
+
+    3.2 KabschのΔR (yaw) のグラフと同じ配色ルールで、各点をジャイロとの
+    ズレ (pair_err) で色分けする: ズレ=gate_deg で黄色、それより小さいと
+    緑→青、大きいほど赤に近づく。
+
+    att (F,3) の (yaw,pitch,roll)[deg] を渡すと、そのセンサーの最初の
+    有効な計測を基準に、以降はジャイロの回転だけで法線を回して予測した
+    方位角を比較用の点線として重ねる (実測点としてはプロットしない)。
+
+    Returns: 保存したPNGパスのリスト。
+    """
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    import matplotlib.colors as mcolors
+
+    t = res["t"] - res["t"][0]
+
+    R_att = None
+    if att is not None:
+        R_att = [rot_ypr(*att[f]) for f in range(len(att))]
+
+    err_cmap = mcolors.LinearSegmentedColormap.from_list(
+        "err_cmap", ["blue", "green", "yellow", "orange", "red"])
+    if gate_deg > 0:
+        err_norm = mcolors.TwoSlopeNorm(vcenter=gate_deg, vmin=0.0, vmax=10.0)
+    else:
+        err_norm = mcolors.Normalize(vmin=0.0, vmax=10.0)
+
+    os.makedirs(out_dir, exist_ok=True)
+    out_paths = []
+    for s in sensors:
+        n = res["plane_n"][s]
+        az = np.degrees(np.arctan2(n[:, 1], n[:, 0]))
+        pair_err = res["pair_err"][s]
+        ok = ~np.isnan(az)
+
+        fig, ax = plt.subplots(figsize=(9, 4))
+
+        # 隣接する有効フレーム同士だけを薄い線でつなぐ (平面性棄却区間はまたがない)
+        for f in range(1, len(az)):
+            if ok[f - 1] and ok[f]:
+                ax.plot(t[f - 1:f + 1], az[f - 1:f + 1], lw=0.8, color="0.75", zorder=1)
+
+        # 比較用のジャイロ予測 (最初の有効な計測を基準に、ジャイロの回転だけで
+        # 法線を回して予測した方位角を点線で重ねる。実測点としては打たない)
+        if R_att is not None and ok.any():
+            f0 = int(np.flatnonzero(ok)[0])
+            n0 = n[f0]
+            R0 = R_att[f0]
+            gyro_az = np.full(len(az), np.nan)
+            for f in range(f0, len(az)):
+                n_pred = R0.T @ R_att[f] @ n0
+                gyro_az[f] = np.degrees(np.arctan2(n_pred[1], n_pred[0]))
+            ax.plot(t[f0:], gyro_az[f0:], lw=1, ls="--", color="k", alpha=0.7,
+                    zorder=2, label="gyro予測 (初回計測基準)")
+
+        has_err = ok & ~np.isnan(pair_err)
+        if has_err.any():
+            sc = ax.scatter(t[has_err], az[has_err], s=18, c=pair_err[has_err],
+                             cmap=err_cmap, norm=err_norm, edgecolors="k",
+                             linewidths=0.3, zorder=3, label="ジャイロと比較あり")
+            fig.colorbar(sc, ax=ax, pad=0.01, label="ジャイロとのズレ [deg]")
+
+        # 直前の自分の計測が無く比較できなかった点はグレーで表示
+        no_err = ok & np.isnan(pair_err)
+        if no_err.any():
+            ax.scatter(t[no_err], az[no_err], s=18, color="0.5",
+                       edgecolors="k", linewidths=0.3, zorder=2, label="比較対象なし")
+
+        ax.set_xlabel("time [s]")
+        ax.set_ylabel("normal azimuth [deg]")
+        ax.set_title(f"sensor{s}: 抽出された法線ベクトルの方位角 (ボディ座標系)")
+        ax.yaxis.set_major_locator(matplotlib.ticker.MultipleLocator(10))
+        ax.grid(alpha=0.3)
+        ax.legend(fontsize=8)
+
+        fig.tight_layout()
+        out_path = os.path.join(out_dir, f"{base}_normal_azimuth_sensor{s}.png")
+        fig.savefig(out_path, dpi=130)
+        plt.close(fig)
+        out_paths.append(out_path)
+        print(f"法線方位角グラフ(sensor{s})を保存: {out_path}")
+    return out_paths
 
 
 def main():
@@ -627,18 +1091,22 @@ def main():
         idx, fresh = tof_frames(arrs, args.sensors,
                                 df["timestamp"].to_numpy(float) / 1000.0)
 
-    planes = extract_planes(df, args.sensors, rng, arrs, idx, fresh)
-
-    # ジャイロ整合チェック用の姿勢 (yaw, pitch, roll)[deg]
-    att = None
-    acols = ("stabilizer.yaw", "stabilizer.pitch", "stabilizer.roll")
-    if args.gate_deg > 0 and all(c in df.columns for c in acols):
-        att = df[list(acols)].to_numpy(dtype=float)[idx]
-    elif args.gate_deg > 0:
-        print("警告: stabilizer.* が無いのでジャイロ整合チェックは無効です",
-              file=sys.stderr)
+    planes, plane_stats, planarity_fail_frames, planarity_ok_frames = extract_planes(
+        df, args.sensors, rng, arrs, idx, fresh)
 
     df = df.iloc[idx].reset_index(drop=True)
+    t_s = df["timestamp"].to_numpy(float) / 1000.0
+
+    # ジャイロ整合チェック/代用用の姿勢 (yaw, pitch, roll)[deg] は生ジャイロ積分。
+    # 代用元 (att) と比較・RMSE計算に使う参照を同じ信号にするため gyro を使い回す。
+    gyro = gyro_reference(df, t_s)
+    att = None
+    if args.gate_deg > 0 and gyro is not None:
+        att = gyro["ypr"]
+    elif args.gate_deg > 0:
+        print("警告: gyro.x/y/z が無いのでジャイロ整合チェックは無効です",
+              file=sys.stderr)
+
     res = run_odometry(planes, args.sensors, df["timestamp"].to_numpy(),
                        att=att, gate_deg=args.gate_deg)
 
@@ -654,13 +1122,41 @@ def main():
           f"{(res['rank_t']==3).sum()}/{(res['rank_t']==2).sum()}/"
           f"{(res['rank_t']==1).sum()}/{(res['rank_t']==0).sum()}")
     src = res["rot_src"]
-    print(f"  ΔR の出所 ToF/ジャイロ(乖離)/ジャイロ(対応なし)/なし : "
-          f"{(src==1).sum()}/{(src==2).sum()}/{(src==3).sum()}/{(src==0).sum()}")
+    print(f"  ΔR の出所 ToF/ジャイロ(乖離)/ジャイロ(対応なし)/なし/ToF(yawのみ) : "
+          f"{(src==1).sum()}/{(src==2).sum()}/{(src==3).sum()}/{(src==0).sum()}/{(src==4).sum()}")
     print(f"  ゲートで捨てた対応 : {res['n_gated'].sum()} 件")
+
+    # 平面性スコアによる棄却率 (fit_plane_ransac が planarity > PLANARITY_EPS で
+    # None を返した回数 / 実際に fit_plane_ransac を呼んだ回数)
+    tot = {k: sum(plane_stats[s][k] for s in args.sensors)
+           for k in ("too_few_points", "ransac_fail", "planarity_fail", "ok")}
+    n_attempts = sum(tot.values())
+    if n_attempts > 0:
+        print(f"  平面性スコアによる棄却率 : {tot['planarity_fail']}/{n_attempts} "
+              f"({100.0 * tot['planarity_fail'] / n_attempts:.1f}%) "
+              f"[点不足 {tot['too_few_points']}, RANSAC失敗 {tot['ransac_fail']}]")
+
+    # ジャイロ整合チェックによる法線ペアの棄却率 (①: n_pred vs cur["n"])
+    n_gated_total = int(res["n_gated"].sum())
+    n_pair_total = int(res["n_pairs"].sum())
+    n_pair_attempts = n_gated_total + n_pair_total
+    if n_pair_attempts > 0:
+        print(f"  法線ペアのジャイロ不整合棄却率 : {n_gated_total}/{n_pair_attempts} "
+              f"({100.0 * n_gated_total / n_pair_attempts:.1f}%)")
+
+    # Kabsch の ΔR がジャイロと gate_deg 以上ずれて棄却され、代わりにジャイロの
+    # 回転を採用した割合 (rot_src: 1=ToF採用, 4=ToF(yawのみ)採用, 2=ジャイロ代用(乖離))
+    n_tof = int((src == 1).sum()) + int((src == 4).sum())
+    n_kabsch_rejected = int((src == 2).sum())
+    n_kabsch_attempts = n_tof + n_kabsch_rejected
+    if n_kabsch_attempts > 0:
+        print(f"  KabschのΔRがジャイロ乖離で棄却された割合 : "
+              f"{n_kabsch_rejected}/{n_kabsch_attempts} "
+              f"({100.0 * n_kabsch_rejected / n_kabsch_attempts:.1f}%)")
+
     print(f"  累積回転 (yaw,pitch,roll) [deg] : {res['ypr'][-1].round(2)}")
     print(f"  累積移動 (x,y,z) [mm]           : {res['pos'][-1].round(1)}")
 
-    gyro = gyro_reference(df, res["t"])
     if gyro is not None:
         print(f"  ジャイロ積分 (yaw,pitch,roll)    : {gyro['ypr'][-1].round(2)}")
         rmse = np.sqrt(np.nanmean((res["ypr"] - gyro["ypr"]) ** 2, axis=0))
@@ -668,7 +1164,18 @@ def main():
 
     base = os.path.splitext(os.path.basename(path))[0]
     out = args.output or os.path.join(OUT_DIR, f"{base}_tof_odometry.png")
-    plot(res, args.sensors, df, out, tmax=args.tmax)
+    plot(res, args.sensors, df, out, tmax=args.tmax, gate_deg=args.gate_deg)
+
+    hist_out = os.path.join(OUT_DIR, f"{base}_gate_hist.png")
+    plot_gate_histograms(res, hist_out)
+
+    planarity_fail_t = t_s[planarity_fail_frames] - t_s[0]
+    planarity_ok_t = t_s[planarity_ok_frames] - t_s[0]
+    time_hist_out = os.path.join(OUT_DIR, f"{base}_rejection_time_hist.png")
+    plot_rejection_time_histograms(res, planarity_fail_t, planarity_ok_t, time_hist_out)
+
+    plot_normal_azimuth_per_sensor(res, args.sensors, OUT_DIR, base,
+                                    gate_deg=args.gate_deg, att=att)
 
     if args.csv_out:
         cols = dict(timestamp=df["timestamp"].to_numpy())
