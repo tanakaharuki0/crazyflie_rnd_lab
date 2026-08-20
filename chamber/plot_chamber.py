@@ -17,6 +17,7 @@ chamber ミッション (app_cf_brushless_chamber) のuSDログを診断用に�
 """
 import argparse
 import os
+import re
 
 import matplotlib
 matplotlib.use("Agg")
@@ -36,8 +37,15 @@ SENSOR_RIGHT = "vl53l8cx.s6"
 SENSOR_UP = "vl53l8cx.s8"
 
 # ファームのセンタリング則のパラメータ (chamber.kCenter / chamber.centerMaxV)
-K_CENTER = 0.7
+# ファイル名に "_k_<値>" が含まれる場合はそちらを優先する (--k で明示上書き可)。
+K_CENTER_DEFAULT = 0.7
 CENTER_MAX_V = 0.05
+
+
+def k_from_filename(path):
+    """'log00_k_0.3.csv' -> 0.3 / 該当なしなら None ('without_Pcontrol' 等)"""
+    m = re.search(r"_k_([0-9]*\.?[0-9]+)", os.path.basename(path))
+    return float(m.group(1)) if m else None
 
 HALF_BOX_M = 0.25  # 50cm チャンバの中心から壁まで
 
@@ -105,7 +113,12 @@ def main():
     ap.add_argument("ff_csv", help="fixedFrequency ストリームのCSV (例 log10.csv)")
     ap.add_argument("pose_csv", help="pose ストリームのCSV (例 log10_pose.csv)")
     ap.add_argument("--save", default=None, help="保存名 (ディレクトリ未指定なら figs/ 下)")
+    ap.add_argument("--k", type=float, default=None,
+                    help="センタリング則のゲイン (省略時はファイル名の '_k_<値>' から自動判定、"
+                         f"無ければ既定値 {K_CENTER_DEFAULT} を使用)")
     args = ap.parse_args()
+
+    k_center = args.k if args.k is not None else (k_from_filename(args.ff_csv) or K_CENTER_DEFAULT)
 
     ff = pd.read_csv(resolve_csv(args.ff_csv))
     pose = pd.read_csv(resolve_csv(args.pose_csv))
@@ -115,6 +128,16 @@ def main():
     t_ff = (ff["timestamp"].to_numpy() - t0) / 1000.0
     t_ps = (pose["timestamp"].to_numpy() - t0) / 1000.0
     hover = hover_bounds(pose, t0)   # APP_HOVER の開始/終了 [s]
+
+    # 連続して実験を行った場合、stateEstimateが前回フライトの位置を引き継いで
+    # おり離陸位置が (0,0,0) になっていないことがあるため、pose先頭サンプルを
+    # 原点とし、そこからの移動量として扱う。
+    pos_x0 = pose["stateEstimate.x"].iloc[0]
+    pos_y0 = pose["stateEstimate.y"].iloc[0]
+    pos_z0 = pose["stateEstimate.z"].iloc[0]
+    pos_x = pose["stateEstimate.x"].to_numpy() - pos_x0
+    pos_y = pose["stateEstimate.y"].to_numpy() - pos_y0
+    pos_z = pose["stateEstimate.z"].to_numpy() - pos_z0
 
     # 壁距離 [m]。ドライバは中央4ゾーン平均を mm で入れる。0以下は無効。
     def dist(col):
@@ -127,7 +150,7 @@ def main():
 
     # ファームと同じ式で指令速度を再現 (無効測距の軸は 0)
     def cmd(a, b):
-        v = np.clip(K_CENTER * (a - b), -CENTER_MAX_V, CENTER_MAX_V)
+        v = np.clip(k_center * (a - b), -CENTER_MAX_V, CENTER_MAX_V)
         return np.where(np.isnan(a) | np.isnan(b), 0.0, v)
 
     vx_cmd, vy_cmd = cmd(dF, dB), cmd(dL, dR)
@@ -170,8 +193,9 @@ def main():
     ax.plot(t_ff, ey, label="ey = (left-right)/2", lw=1.3)
     ax.axhline(0, color="k", lw=0.8)
     for s in (+1, -1):
-        ax.axhline(s * CENTER_MAX_V / K_CENTER / 2, color="tab:red", ls=":", lw=1.0)
-    ax.text(0.01, 0.03, "outside red dotted lines = command saturated (|e| > 3.6 cm)",
+        ax.axhline(s * CENTER_MAX_V / k_center / 2, color="tab:red", ls=":", lw=1.0)
+    sat_thresh_cm = CENTER_MAX_V / k_center / 2 * 100
+    ax.text(0.01, 0.03, f"outside red dotted lines = command saturated (|e| > {sat_thresh_cm:.1f} cm)",
             transform=ax.transAxes, fontsize=8, color="tab:red")
     ax.set_ylabel("offset from centre [m]")
     ax.set_title("Centering error (0 = centred)")
@@ -197,20 +221,20 @@ def main():
     for s in (+1, -1):
         ax.axhline(s * CENTER_MAX_V, color="tab:red", ls=":", lw=1.0)
     ax.set_ylabel("commanded velocity [m/s]")
-    ax.set_title(f"Recomputed centering command  (k={K_CENTER}, clamp=±{CENTER_MAX_V} m/s)")
+    ax.set_title(f"Recomputed centering command  (k={k_center}, clamp=±{CENTER_MAX_V} m/s)")
     ax.legend(fontsize=8)
     ax.grid(alpha=0.3)
 
     # --- (2,1) 位置推定 ---
     ax = axes[2, 1]
     shade_states(ax, pose, t0, hover)
-    ax.plot(t_ps, pose["stateEstimate.x"], label="x", lw=1.3)
-    ax.plot(t_ps, pose["stateEstimate.y"], label="y", lw=1.3)
-    ax.plot(t_ps, pose["stateEstimate.z"], label="z", lw=1.3)
+    ax.plot(t_ps, pos_x, label="x", lw=1.3)
+    ax.plot(t_ps, pos_y, label="y", lw=1.3)
+    ax.plot(t_ps, pos_z, label="z", lw=1.3)
     for s in (+1, -1):
         ax.axhline(s * HALF_BOX_M, color="k", ls="--", lw=0.8)
-    ax.set_ylabel("estimator position [m]")
-    ax.set_title("stateEstimate (dashed = box wall at ±0.25 m from takeoff point)")
+    ax.set_ylabel("position since takeoff [m]")
+    ax.set_title("stateEstimate, origin = takeoff (dashed = box wall at ±0.25 m from takeoff point)")
     ax.legend(fontsize=8)
     ax.grid(alpha=0.3)
 
@@ -228,8 +252,8 @@ def main():
 
     # --- (3,1) XY 軌跡 ---
     ax = axes[3, 1]
-    x = pose["stateEstimate.x"].to_numpy()
-    y = pose["stateEstimate.y"].to_numpy()
+    x = pos_x
+    y = pos_y
     sc = ax.scatter(x, y, c=t_ps, cmap="viridis", s=12, zorder=3)
     ax.plot(x, y, color="gray", lw=0.7, alpha=0.7, zorder=2)
     ax.plot(x[0], y[0], "go", ms=9, label="takeoff", zorder=4)
@@ -267,7 +291,7 @@ def main():
             print(f"  {name:5s}: min={np.nanmin(a):.3f}  mean={np.nanmean(a):.3f}  max={np.nanmax(a):.3f} m")
         for name, arr in (("ex", ex), ("ey", ey)):
             a = arr[m.to_numpy()]
-            sat = np.nanmean(np.abs(a) > CENTER_MAX_V / K_CENTER / 2) * 100
+            sat = np.nanmean(np.abs(a) > CENTER_MAX_V / k_center / 2) * 100
             print(f"  {name}: mean={np.nanmean(a):+.3f} m, |max|={np.nanmax(np.abs(a)):.3f} m, 飽和率={sat:.0f}%")
         print(f"  |roll|max={pose.loc[hover,'stabilizer.roll'].abs().max():.1f} deg, "
               f"|pitch|max={pose.loc[hover,'stabilizer.pitch'].abs().max():.1f} deg, "

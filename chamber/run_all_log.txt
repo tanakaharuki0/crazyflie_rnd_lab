@@ -1,0 +1,182 @@
+﻿=== log00_k_0.5 ===
+保存しました: figs/log00_k_0.5_diag.png
+=== log00_k_0.7 ===
+保存しました: figs/log00_k_0.7_diag.png
+
+=== HOVER 区間の統計 ===
+  区間: 2.88 - 12.74 s
+  front: min=0.361  mean=0.447  max=1.017 m
+  back : min=0.001  mean=0.029  max=0.763 m
+  left : min=0.149  mean=0.303  max=1.068 m
+  right: min=0.093  mean=0.236  max=0.367 m
+  ex: mean=+0.210 m, |max|=0.499 m, 飽和率=85%
+  ey: mean=+0.034 m, |max|=0.375 m, 飽和率=45%
+  |roll|max=6.0 deg, |pitch|max=6.0 deg, yaw drift=-9.2 deg
+=== log00_without_Pcontrol ===
+保存しました: figs/log00_without_Pcontrol_diag.png
+
+=== HOVER 区間の統計 ===
+  区間: 2.88 - 12.75 s
+  front: min=0.083  mean=0.208  max=0.320 m
+  back : min=0.115  mean=0.289  max=0.844 m
+  left : min=0.281  mean=0.422  max=0.484 m
+  right: min=0.040  mean=0.098  max=0.212 m
+  ex: mean=-0.041 m, |max|=0.342 m, 飽和率=72%
+  ey: mean=+0.162 m, |max|=0.212 m, 飽和率=100%
+  |roll|max=11.6 deg, |pitch|max=9.7 deg, yaw drift=-14.5 deg
+=== log01_k_0.7 ===
+保存しました: figs/log01_k_0.7_diag.png
+
+=== HOVER 区間の統計 ===
+  区間: 2.88 - 12.75 s
+  front: min=0.002  mean=0.058  max=0.487 m
+  back : min=0.240  mean=0.398  max=0.709 m
+  left : min=0.148  mean=0.273  max=0.715 m
+  right: min=0.149  mean=0.261  max=0.958 m
+  ex: mean=-0.163 m, |max|=0.276 m, 飽和率=71%
+  ey: mean=+0.006 m, |max|=0.337 m, 飽和率=44%
+  |roll|max=6.6 deg, |pitch|max=4.6 deg, yaw drift=+8.3 deg
+=== log01_k_0.5 ===
+保存しました: figs/log01_k_0.5_diag.png
+
+=== HOVER 区間の統計 ===
+  区間: 2.89 - 12.77 s
+  front: min=0.136  mean=0.211  max=0.285 m
+  back : min=0.148  mean=0.225  max=0.413 m
+  left : min=0.137  mean=0.229  max=0.281 m
+  right: min=0.208  mean=0.267  max=0.356 m
+  ex: mean=-0.007 m, |max|=0.127 m, 飽和率=27%
+  ey: mean=-0.019 m, |max|=0.110 m, 飽和率=25%
+  |roll|max=7.8 deg, |pitch|max=7.8 deg, yaw drift=+5.1 deg
+=== log01_without_Pcontrol ===
+保存しました: figs/log01_without_Pcontrol_diag.png
+
+=== HOVER 区間の統計 ===
+  区間: 2.88 - 12.75 s
+  front: min=0.359  mean=0.424  max=0.459 m
+  back : min=0.001  mean=0.164  max=1.330 m
+  left : min=0.327  mean=0.375  max=0.415 m
+  right: min=0.086  mean=0.112  max=0.165 m
+  ex: mean=+0.128 m, |max|=0.455 m, 飽和率=20%
+  ey: mean=+0.132 m, |max|=0.162 m, 飽和率=100%
+  |roll|max=4.9 deg, |pitch|max=9.9 deg, yaw drift=+13.5 deg
+=== log02_without_Pcontrol ===
+保存しました: figs/log02_without_Pcontrol_diag.png
+
+=== HOVER 区間の統計 ===
+  区間: 2.89 - 12.75 s
+  front: min=0.001  mean=0.154  max=0.335 m
+  back : min=0.255  mean=0.359  max=0.422 m
+  left : min=0.331  mean=0.433  max=0.501 m
+  right: min=0.049  mean=0.144  max=0.309 m
+  ex: mean=-0.088 m, |max|=0.201 m, 飽和率=44%
+  ey: mean=+0.145 m, |max|=0.215 m, 飽和率=97%
+  |roll|max=10.2 deg, |pitch|max=6.3 deg, yaw drift=-27.1 deg
+=== log02_k_0.5 ===
+保存しました: figs/log02_k_0.5_diag.png
+
+=== HOVER 区間の統計 ===
+  区間: 2.88 - 12.74 s
+  front: min=0.183  mean=0.245  max=0.391 m
+  back : min=0.041  mean=0.223  max=0.651 m
+  left : min=0.049  mean=0.232  max=0.339 m
+  right: min=0.212  mean=0.284  max=0.456 m
+  ex: mean=+0.011 m, |max|=0.224 m, 飽和率=32%
+  ey: mean=-0.026 m, |max|=0.204 m, 飽和率=33%
+  |roll|max=4.9 deg, |pitch|max=4.9 deg, yaw drift=-8.3 deg
+=== log03_k_0.5 ===
+保存しました: figs/log03_k_0.5_diag.png
+
+=== HOVER 区間の統計 ===
+  区間: 2.88 - 12.76 s
+  front: min=0.155  mean=0.285  max=0.397 m
+  back : min=0.134  mean=0.263  max=0.622 m
+  left : min=0.133  mean=0.290  max=0.459 m
+  right: min=0.193  mean=0.318  max=0.419 m
+  ex: mean=+0.011 m, |max|=0.167 m, 飽和率=45%
+  ey: mean=-0.014 m, |max|=0.126 m, 飽和率=54%
+  |roll|max=9.0 deg, |pitch|max=7.8 deg, yaw drift=-5.5 deg
+=== log03_k_0.7 ===
+保存しました: figs/log03_k_0.7_diag.png
+
+=== HOVER 区間の統計 ===
+  区間: 2.88 - 12.75 s
+  front: min=0.188  mean=0.314  max=0.809 m
+  back : min=0.045  mean=0.206  max=0.653 m
+  left : min=0.171  mean=0.277  max=0.935 m
+  right: min=0.221  mean=0.293  max=0.568 m
+  ex: mean=+0.054 m, |max|=0.300 m, 飽和率=59%
+  ey: mean=-0.008 m, |max|=0.326 m, 飽和率=48%
+  |roll|max=9.4 deg, |pitch|max=7.6 deg, yaw drift=-4.7 deg
+=== log03_without_Pcontrol ===
+保存しました: figs/log03_without_Pcontrol_diag.png
+
+=== HOVER 区間の統計 ===
+  区間: 2.89 - 12.76 s
+  front: min=0.003  mean=0.050  max=0.089 m
+  back : min=0.312  mean=0.366  max=0.512 m
+  left : min=0.432  mean=0.461  max=0.472 m
+  right: min=0.041  mean=0.044  max=0.056 m
+  ex: mean=-0.158 m, |max|=0.232 m, 飽和率=100%
+  ey: mean=+0.208 m, |max|=0.213 m, 飽和率=100%
+  |roll|max=7.2 deg, |pitch|max=5.7 deg, yaw drift=+8.2 deg
+=== log04_k_0.7 ===
+保存しました: figs/log04_k_0.7_diag.png
+
+=== HOVER 区間の統計 ===
+  区間: 2.88 - 12.75 s
+  front: min=0.037  mean=0.356  max=0.931 m
+  back : min=0.079  mean=0.224  max=0.943 m
+  left : min=0.179  mean=0.310  max=0.705 m
+  right: min=0.038  mean=0.293  max=0.576 m
+  ex: mean=+0.066 m, |max|=0.244 m, 飽和率=78%
+  ey: mean=+0.008 m, |max|=0.311 m, 飽和率=60%
+  |roll|max=8.4 deg, |pitch|max=9.4 deg, yaw drift=+23.8 deg
+=== log04_without_Pcontrol ===
+保存しました: figs/log04_without_Pcontrol_diag.png
+
+=== HOVER 区間の統計 ===
+  区間: 2.88 - 12.75 s
+  front: min=0.122  mean=0.227  max=0.355 m
+  back : min=0.099  mean=0.235  max=0.510 m
+  left : min=0.062  mean=0.225  max=0.370 m
+  right: min=0.134  mean=0.276  max=0.434 m
+  ex: mean=-0.004 m, |max|=0.146 m, 飽和率=61%
+  ey: mean=-0.025 m, |max|=0.186 m, 飽和率=88%
+  |roll|max=8.4 deg, |pitch|max=8.4 deg, yaw drift=-1.1 deg
+=== log06_k_0.7 ===
+保存しました: figs/log06_k_0.7_diag.png
+
+=== HOVER 区間の統計 ===
+  区間: 2.88 - 12.75 s
+  front: min=0.203  mean=0.302  max=0.418 m
+  back : min=0.014  mean=0.161  max=0.388 m
+  left : min=0.152  mean=0.320  max=0.436 m
+  right: min=0.060  mean=0.190  max=0.369 m
+  ex: mean=+0.070 m, |max|=0.202 m, 飽和率=74%
+  ey: mean=+0.065 m, |max|=0.186 m, 飽和率=77%
+  |roll|max=7.8 deg, |pitch|max=6.3 deg, yaw drift=+27.8 deg
+=== log07_k_0.7 ===
+保存しました: figs/log07_k_0.7_diag.png
+
+=== HOVER 区間の統計 ===
+  区間: 2.88 - 12.74 s
+  front: min=0.167  mean=0.226  max=0.280 m
+  back : min=0.158  mean=0.231  max=0.448 m
+  left : min=0.134  mean=0.246  max=0.316 m
+  right: min=0.178  mean=0.252  max=0.361 m
+  ex: mean=-0.003 m, |max|=0.115 m, 飽和率=26%
+  ey: mean=-0.003 m, |max|=0.114 m, 飽和率=27%
+  |roll|max=7.1 deg, |pitch|max=7.6 deg, yaw drift=+10.0 deg
+=== log08_k_0.7 ===
+保存しました: figs/log08_k_0.7_diag.png
+
+=== HOVER 区間の統計 ===
+  区間: 2.88 - 12.74 s
+  front: min=0.126  mean=0.212  max=0.275 m
+  back : min=0.174  mean=0.262  max=0.666 m
+  left : min=0.150  mean=0.267  max=0.367 m
+  right: min=0.152  mean=0.246  max=0.498 m
+  ex: mean=-0.025 m, |max|=0.239 m, 飽和率=34%
+  ey: mean=+0.010 m, |max|=0.174 m, 飽和率=39%
+  |roll|max=8.4 deg, |pitch|max=9.2 deg, yaw drift=-3.6 deg
