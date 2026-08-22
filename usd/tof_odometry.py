@@ -45,8 +45,9 @@ D_MAX_MM = 4000.0       # 有効とみなす距離の上限
 RANSAC_ITERS = 60
 RANSAC_THRESH_MM = 20.0   # 平面までの許容残差
 MIN_INLIERS = 8           # 16点中この数以上のインライアが必要
-PLANARITY_EPS = 0.006     # λ3/(λ1+λ2+λ3) の閾値 (tof_odometry.c と同値)
-GATE_DEG = 2.0            # ジャイロ整合チェックの閾値[deg]。0で無効
+# PLANARITY_EPS = 0.006     # λ3/(λ1+λ2+λ3) の閾値 (tof_odometry.c と同値)
+PLANARITY_EPS = 0.01    
+GATE_DEG = 3.0            # ジャイロ整合チェックの閾値[deg]。0で無効
 LARGE_ERR_DEG = 2.0      # ジャイロとのズレがこれ以上の点はグラフ上に点でマーキングする[deg]
 
 # ---- センサー取り付け (docs/vl53l8cx-position.md, 位置[mm]/角度[deg]) ----
