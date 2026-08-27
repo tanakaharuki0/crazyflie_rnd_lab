@@ -216,8 +216,10 @@ def collect():
 def save(fig, name):
     p = os.path.join(FIGS_DIR, name)
     fig.savefig(p, bbox_inches="tight")
+    pdf_p = os.path.splitext(p)[0] + ".pdf"
+    fig.savefig(pdf_p, bbox_inches="tight")
     plt.close(fig)
-    print("  saved", p)
+    print("  saved", p, "and", pdf_p)
 
 
 # ---------------------------------------------------------------- figures
