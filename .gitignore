@@ -1,3 +1,12 @@
 __pycache__/
 *.pyc
 *.pyo
+
+# Raw microSD binary logs (log0 .. log9999, no extension).
+# Only the extension-less originals are ignored; everything derived from them
+# (*.csv, *.png, *.gif) stays tracked. Regenerate CSVs with
+# chamber/log_to_csv_chamber.py or usd/log_to_csv.py.
+log[0-9]
+log[0-9][0-9]
+log[0-9][0-9][0-9]
+log[0-9][0-9][0-9][0-9]
