@@ -64,6 +64,13 @@ EXPS = [
 COLORS = {"ex1": "#8c8c8c", "ex2": "#4c72b0", "ex3": "#dd8452", "ex4": "#55a868"}
 
 HALF_BOX = 0.25      # m, chamber half width
+
+# mobicom_experiment.md の「評価の修正」に従う。
+# crash した飛行と、ログが残らなかった飛行 (logナシ) は母集団から除外し、
+# 残ったうちの先頭 N 件だけを評価に使う (条件間で n を揃えるため)。
+# ex1 は logナシ 2 件 (うち 1 件は crash) を除くとちょうど 10 件になり、
+# ex3/ex4 は 11 件あるので最後の 1 件が落ちる。
+N_EVAL = 10
 STATE_TAKEOFF, STATE_HOVER, STATE_LAND = 5, 6, 7
 
 
@@ -204,12 +211,18 @@ def collect():
                 t = (h["timestamp"].to_numpy() - h["timestamp"].iloc[0]) / 1000.0
                 samples.append(dict(t=t, x=x, y=y, e=e, clr=clr, log=num))
             metrics[num] = row
+        # crash / logナシ を除いた順に N_EVAL 件を選ぶ
+        keep = [n for n, r in sc.iterrows()
+                if not r["crash"] and not r["no_log"]][:N_EVAL]
         for num, srow in sc.iterrows():
+            if srow["no_log"]:
+                continue          # ログが無い飛行は集計から完全に除外
             row = dict(ex=exid, log=num)
             row.update(srow.to_dict())
             row.update(metrics.get(num, {}))
+            row["in_eval"] = num in keep
             per_flight.append(row)
-        per_sample[exid] = samples
+        per_sample[exid] = [s for s in samples if s["log"] in keep]
     return pd.DataFrame(per_flight), per_sample
 
 
@@ -232,15 +245,18 @@ def fig_outcomes(df):
     ax = axes[0]
     v = [100 * df[df.ex == e]["crash"].mean() for e in ids]
     ax.bar(range(4), v, color=cs)
-    ax.set_ylabel("Crash rate [%]"); ax.set_title("(a) Crash rate")
+    for i, y in enumerate(v):
+        ax.text(i, y + 1.2, f"{y:.0f}", ha="center", fontsize=9)
+    ax.set_ylabel("Crash rate [%]")
+    ax.set_title("(a) Crash rate (all attempts)")
 
     ax = axes[1]
-    v = [100 * df[(df.ex == e) & (~df.crash)]["wall_hit_on_landing"].mean() for e in ids]
+    v = [100 * df[(df.ex == e) & df.in_eval]["wall_hit_on_landing"].mean() for e in ids]
     ax.bar(range(4), v, color=cs)
     ax.set_ylabel("Wall contact at landing [%]"); ax.set_title("(b) Wall contact on landing")
 
     ax = axes[2]
-    data = [df[(df.ex == e) & (~df.crash)]["collisions"].dropna().to_numpy() for e in ids]
+    data = [df[(df.ex == e) & df.in_eval]["collisions"].dropna().to_numpy() for e in ids]
     bp = ax.boxplot(data, positions=range(4), widths=0.6, patch_artist=True, showmeans=True)
     for p, c in zip(bp["boxes"], cs):
         p.set_facecolor(c); p.set_alpha(0.65)
@@ -250,7 +266,7 @@ def fig_outcomes(df):
     ax.set_ylabel("Wall collisions per flight"); ax.set_title("(c) Collisions during flight")
 
     ax = axes[3]
-    data = [df[(df.ex == e) & (~df.crash)]["offset_cm"].dropna().to_numpy() for e in ids]
+    data = [df[(df.ex == e) & df.in_eval]["offset_cm"].dropna().to_numpy() for e in ids]
     bp = ax.boxplot(data, positions=range(4), widths=0.6, patch_artist=True, showmeans=True)
     for p, c in zip(bp["boxes"], cs):
         p.set_facecolor(c); p.set_alpha(0.65)
@@ -277,7 +293,7 @@ def fig_hover_error(df, samples):
     cs = [COLORS[e] for e in ids]
 
     ax = axes[0]
-    data = [df[(df.ex == e) & (~df.crash)]["err_rms_cm"].dropna().to_numpy() for e in ids]
+    data = [df[(df.ex == e) & df.in_eval]["err_rms_cm"].dropna().to_numpy() for e in ids]
     bp = ax.boxplot(data, positions=range(4), widths=0.6, patch_artist=True, showmeans=True)
     for p, c in zip(bp["boxes"], cs):
         p.set_facecolor(c); p.set_alpha(0.65)
@@ -288,7 +304,7 @@ def fig_hover_error(df, samples):
     ax.set_title("(a) Hover centring error")
 
     ax = axes[1]
-    data = [df[(df.ex == e) & (~df.crash)]["clr_min_cm"].dropna().to_numpy() for e in ids]
+    data = [df[(df.ex == e) & df.in_eval]["clr_min_cm"].dropna().to_numpy() for e in ids]
     bp = ax.boxplot(data, positions=range(4), widths=0.6, patch_artist=True, showmeans=True)
     for p, c in zip(bp["boxes"], cs):
         p.set_facecolor(c); p.set_alpha(0.65)
@@ -349,7 +365,7 @@ def fig_sensing(df, samples):
     walls = ["front", "back", "left", "right"]
     w = 0.2
     for j, e in enumerate(ids):
-        d = df[(df.ex == e) & (~df.crash)]
+        d = df[(df.ex == e) & df.in_eval]
         v = [np.nanmean(d[f"plane_{k}_pct"]) if f"plane_{k}_pct" in d else np.nan for k in walls]
         ax.bar(np.arange(4) + (j - 1.5) * w, v, w, label=e.upper(), color=COLORS[e])
     ax.set_xticks(range(4)); ax.set_xticklabels(walls)
@@ -358,7 +374,7 @@ def fig_sensing(df, samples):
     ax.set_ylim(0, 108)
 
     ax = axes[1]
-    data = [df[(df.ex == e) & (~df.crash)]["wallyaw_med"].dropna().to_numpy() for e in ids]
+    data = [df[(df.ex == e) & df.in_eval]["wallyaw_med"].dropna().to_numpy() for e in ids]
     bp = ax.boxplot(data, positions=range(4), widths=0.6, patch_artist=True, showmeans=True)
     for p, c in zip(bp["boxes"], cs):
         p.set_facecolor(c); p.set_alpha(0.65)
@@ -385,6 +401,30 @@ def fig_sensing(df, samples):
     save(fig, "fig4_sensing.png")
 
 
+def fig_demo_paper(df):
+    """MobiCom demo paper 用: fig1(c) 衝突回数 と fig2(a) センタリング誤差 を横並び。"""
+    ids = [e for e, _, _, _, _ in EXPS]
+    cs = [COLORS[e] for e in ids]
+    fig, axes = plt.subplots(1, 2, figsize=(7.2, 3.0))
+
+    for ax, key, ylab, title in (
+            (axes[0], "collisions", "Wall collisions per flight", "(a) Collisions during flight"),
+            (axes[1], "err_rms_cm", r"RMS centring error $|e|$ [cm]", "(b) Hover centring error")):
+        data = [df[(df.ex == e) & df.in_eval][key].dropna().to_numpy() for e in ids]
+        bp = ax.boxplot(data, positions=range(4), widths=0.6, patch_artist=True, showmeans=True)
+        for b, c in zip(bp["boxes"], cs):
+            b.set_facecolor(c); b.set_alpha(0.65)
+        for i, d in enumerate(data):
+            ax.scatter(np.full(len(d), i) + np.random.uniform(-.12, .12, len(d)), d,
+                       s=13, color="k", alpha=0.55, zorder=3)
+        ax.set_ylabel(ylab)
+        ax.set_title(title)
+        ax.set_xticks(range(4))
+        ax.set_xticklabels([e.upper() for e in ids])
+        ax.set_xlim(-0.6, 3.6)
+    save(fig, "fig_demo_collisions_error.png")
+
+
 # ---------------------------------------------------------------- main
 def main():
     df, samples = collect()
@@ -394,13 +434,15 @@ def main():
     fig_hover_error(df, samples)
     fig_traj(samples)
     fig_sensing(df, samples)
+    fig_demo_paper(df)
 
     print("\n================ SUMMARY ================")
     for exid, _, _, short, _ in EXPS:
         d = df[df.ex == exid]
-        ok = d[~d.crash]
+        ok = d[d.in_eval]
         n, nc = len(d), int(d.crash.sum())
-        print(f"\n{short}   n={n}, crash={nc} ({100*nc/n:.0f}%)")
+        print(f"\n{short}   attempts={n}, crash={nc} ({100*nc/n:.0f}%), "
+              f"non-crash={n-nc}, evaluated={int(d.in_eval.sum())}")
         if len(ok):
             print(f"  collisions/flight   mean {ok.collisions.mean():.2f}  median {ok.collisions.median():.1f}"
                   f"  zero-collision {100*np.mean(ok.collisions==0):.0f}%")
