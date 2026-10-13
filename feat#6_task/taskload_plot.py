@@ -357,6 +357,7 @@ def summary(df, cols, percent=False):
 
 
 def main():
+    global FIG_DIR, CSV_DIR
     ap = argparse.ArgumentParser(
         description="tasklog をCSVに変換し、タスクごとの実行時間をプロットする")
     ap.add_argument("logs", nargs="*",
@@ -379,7 +380,13 @@ def main():
     ap.add_argument("--event", default="fixedFrequency", help="抽出するイベント名")
     ap.add_argument("-o", "--output", default=None,
                     help="出力PNGパス (入力が1件のときのみ)")
+    ap.add_argument("--fig-dir", default=None, help=f"PNGの出力先 (既定 {FIG_DIR})")
+    ap.add_argument("--csv-dir", default=None, help=f"CSVの出力先 (既定 {CSV_DIR})")
     args = ap.parse_args()
+    if args.fig_dir:
+        FIG_DIR = os.path.abspath(args.fig_dir)
+    if args.csv_dir:
+        CSV_DIR = os.path.abspath(args.csv_dir)
 
     targets = list(args.logs)
     if args.all or not targets:

@@ -201,12 +201,111 @@ def plot(df, base, out_path, tmax=None):
     print(f"グラフを保存: {out_path}")
 
 
+def is_scope_csv(path):
+    """オシロスコープ (Tektronix MDO) が書き出した波形CSVか。"""
+    if not (path.lower().endswith(".csv") and os.path.isfile(path)):
+        return False
+    with open(path, "r", errors="replace") as f:
+        return f.readline().startswith("Model,")
+
+
+def load_scope(path):
+    """オシロの波形CSV (先頭に機器情報、'TIME,CH1' 以降が波形) を読む。"""
+    import pandas as pd
+    with open(path, "r", errors="replace") as f:
+        for skip, line in enumerate(f):
+            if line.startswith("TIME,"):
+                break
+        else:
+            sys.exit(f"'TIME,' の行がありません: {path}")
+    df = pd.read_csv(path, skiprows=skip)
+    return df, os.path.splitext(os.path.basename(path))[0]
+
+
+def scope_power(df, shunt, supply):
+    """シャント抵抗の電圧降下から 電流 [A] と 機体側の消費電力 [W] を求める。"""
+    v = df.iloc[:, 1].to_numpy(dtype=float)
+    cur = v / shunt
+    # 電源電圧のうちシャントで落ちた分は機体に届かない
+    return v, cur, (supply - v) * cur
+
+
+def analyse_scope(df, shunt, supply):
+    t = df.iloc[:, 0].to_numpy(dtype=float)
+    v, cur, p = scope_power(df, shunt, supply)
+    print(f"  記録時間 {t[-1]-t[0]:.1f}s, シャント {shunt}Ω, 電源 {supply}V")
+    print(f"    シャント電圧: 平均 {v.mean()*1000:.1f}mV, 最小 {v.min()*1000:.0f}mV, "
+          f"最大 {v.max()*1000:.0f}mV")
+    print(f"    電流: 平均 {cur.mean():.3f}A, 最大 {cur.max():.3f}A")
+    print(f"    機体電力 P=(Vs-Vsh)*I: 平均 {p.mean():.3f}W, 最大 {p.max():.3f}W")
+    print(f"    電源電力 P=Vs*I      : 平均 {(supply*cur).mean():.3f}W")
+
+
+def plot_scope(df, base, out_path, shunt, supply, tmax=None):
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    _set_jp_font()
+
+    t = df.iloc[:, 0].to_numpy(dtype=float)
+    t = t - t[0]
+    v, cur, p = scope_power(df, shunt, supply)
+    # オシロの量子化ノイズが大きいので 0.1s の移動平均も重ねる
+    n = max(1, int(round(0.1 / np.median(np.diff(t)))))
+    smooth = lambda x: np.convolve(x, np.ones(n) / n, mode="same")
+
+    fig, ax = plt.subplots(3, 1, figsize=(13, 9), sharex=True)
+    for a, y, color, ylabel in (
+            (ax[0], v * 1000.0, "tab:blue", "シャント電圧 [mV]"),
+            (ax[1], cur, "tab:green", "電流 [A]"),
+            (ax[2], p, "tab:orange", "機体電力 [W]")):
+        a.plot(t, y, lw=0.5, color=color, alpha=0.4, label="生値")
+        a.plot(t[n:-n], smooth(y)[n:-n], lw=1.2, color=color, label="移動平均 0.1s")
+        a.axhline(y.mean(), color="k", lw=0.8, ls="--",
+                  label=f"平均 {y.mean():.3f}")
+        a.set_ylabel(ylabel)
+        a.grid(alpha=0.3)
+        a.legend(fontsize=8, loc="upper right")
+    ax[0].set_title(f"{base}: 消費電力 (シャント {shunt}Ω, 電源 {supply}V)")
+    ax[2].set_xlabel("time [s]")
+
+    if tmax is not None:
+        for a in ax:
+            a.set_xlim(0, tmax)
+
+    fig.tight_layout()
+    os.makedirs(os.path.dirname(out_path), exist_ok=True)
+    fig.savefig(out_path, dpi=130)
+    plt.close(fig)
+    print(f"グラフを保存: {out_path}")
+
+
 def main():
+    global FIG_DIR, CSV_DIR
     ap = argparse.ArgumentParser(description="pwrlog を解析して電力/モーター出力を描く")
-    ap.add_argument("log", help="pwrlog バイナリ (例: pwrlog01) または CSV")
+    ap.add_argument("log", help="pwrlog バイナリ (例: pwrlog01) または CSV "
+                                "(オシロの波形CSVならシャント電圧から電力を描く)")
     ap.add_argument("--tmax", type=float, default=None, help="表示上限時刻 [s]")
     ap.add_argument("-o", "--output", default=None, help="出力PNGパス")
+    ap.add_argument("--fig-dir", default=None, help=f"PNGの出力先 (既定 {FIG_DIR})")
+    ap.add_argument("--csv-dir", default=None, help=f"CSVの出力先 (既定 {CSV_DIR})")
+    ap.add_argument("--shunt", type=float, default=0.22,
+                    help="シャント抵抗 [Ω] (オシロCSV用, 既定 0.22)")
+    ap.add_argument("--supply", type=float, default=3.7,
+                    help="外部電源の電圧 [V] (オシロCSV用, 既定 3.7)")
     args = ap.parse_args()
+    if args.fig_dir:
+        FIG_DIR = os.path.abspath(args.fig_dir)
+    if args.csv_dir:
+        CSV_DIR = os.path.abspath(args.csv_dir)
+
+    if is_scope_csv(args.log):
+        df, base = load_scope(args.log)
+        print(f"入力: {args.log}  ({len(df)} サンプル)")
+        analyse_scope(df, args.shunt, args.supply)
+        out = args.output or os.path.join(FIG_DIR, f"{base}_power.png")
+        plot_scope(df, base, out, args.shunt, args.supply, tmax=args.tmax)
+        return
 
     df, base = load(args.log)
     print(f"入力: {args.log}  ({len(df)} サンプル)")

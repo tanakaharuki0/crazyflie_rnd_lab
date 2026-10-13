@@ -28,7 +28,7 @@
  - 回，cm, crash
  - 回，cm, crash
  - 回，cm, crash
- - logナシ、3回，25cm, 
+ - logナシ, 
  - 3回，25cm, 
  - 回，cm, crash
  - 2回，10cm, 
