@@ -1,0 +1,140 @@
+CSVに変換: /home/h-tanaka/workspace/crazyflie/crazyflie_rnd_lab/feat#6_task/eval_fig_8x8/csv/log_vl11_05Hz_00.csv  (706 サンプル, 71 列)
+入力: eval_logs_8*8/log_vl11_05Hz_00
+  サンプル数 506, 区間 2.0〜12.0s
+  サンプリング区間 median 988.2 ms
+  task            平均[us]    最大[us]    平均[%]    最大[%]
+  SENSORS          72154     72968     7.30     7.38
+  KALMAN           60127     60852     6.08     6.16
+  ZRANGER2         21524     22299     2.18     2.26
+  FLOW             20177     20702     2.04     2.09
+  VL53L8CX          7758      7963     0.79     0.81
+  USDWRITE          4566      4792     0.46     0.48
+  SYSLINK           2244      2391     0.23     0.24
+  USDLOG             254       274     0.03     0.03
+  CRTP_RX            145       159     0.01     0.02
+  PWRMGNT             73        86     0.01     0.01
+  cpuLoad: 平均 28.0% / 最大 28.2%
+グラフを保存: /home/h-tanaka/workspace/crazyflie/crazyflie_rnd_lab/feat#6_task/eval_fig_8x8/log_vl11_05Hz_00_taskload.png
+  ヒープ: 使用率 平均 80.0% / 最大 80.0%  (最悪の空き 9976 / 50000 byte, 使用率 80.0%)
+  タスク別スタック残量 [byte] (小さい順):
+    APP                0
+    PLATFORM           0
+    STABILIZER         0
+    PWRMGNT          140
+    ZRANGER2         308
+    CRTP_TX          448
+    USBLINK          464
+    CRTP_SRV         476
+    SYSTEM           488
+    IDLE             512
+    SENSORS          580
+    USDLOG           684
+    FLOW             756
+    SYSLINK          820
+    USDWRITE         988
+    CRTP_RX         1000
+    CMDHL           1004
+    MEM             1056
+    LOGT            1060
+    WORKER          1068
+    PARAM           1076
+    KALMAN          1336
+    VL53L8CX        3628
+メモリグラフを保存: /home/h-tanaka/workspace/crazyflie/crazyflie_rnd_lab/feat#6_task/eval_fig_8x8/log_vl11_05Hz_00_mem.png
+
+CSVに変換: /home/h-tanaka/workspace/crazyflie/crazyflie_rnd_lab/feat#6_task/eval_fig_8x8/csv/log_vl11_10Hz_00.csv  (706 サンプル, 71 列)
+入力: eval_logs_8*8/log_vl11_10Hz_00
+  サンプル数 506, 区間 2.0〜12.0s
+  サンプリング区間 median 988.2 ms
+  task            平均[us]    最大[us]    平均[%]    最大[%]
+  SENSORS          72221     73023     7.31     7.39
+  KALMAN           59829     60637     6.05     6.13
+  ZRANGER2         21580     22498     2.18     2.28
+  FLOW             16161     17339     1.64     1.75
+  VL53L8CX         13548     14097     1.37     1.43
+  USDWRITE          4603      4865     0.47     0.49
+  SYSLINK           2307      2472     0.23     0.25
+  USDLOG             265       313     0.03     0.03
+  CRTP_RX            140       158     0.01     0.02
+  PWRMGNT             74        81     0.01     0.01
+  cpuLoad: 平均 28.1% / 最大 28.4%
+グラフを保存: /home/h-tanaka/workspace/crazyflie/crazyflie_rnd_lab/feat#6_task/eval_fig_8x8/log_vl11_10Hz_00_taskload.png
+  ヒープ: 使用率 平均 80.0% / 最大 80.0%  (最悪の空き 9976 / 50000 byte, 使用率 80.0%)
+  タスク別スタック残量 [byte] (小さい順):
+    APP                0
+    PLATFORM           0
+    STABILIZER         0
+    PWRMGNT          140
+    ZRANGER2         308
+    CRTP_TX          448
+    USBLINK          464
+    CRTP_SRV         476
+    SYSTEM           488
+    IDLE             512
+    SENSORS          580
+    USDLOG           684
+    FLOW             756
+    SYSLINK          828
+    USDWRITE         988
+    CRTP_RX         1000
+    CMDHL           1004
+    MEM             1056
+    LOGT            1060
+    WORKER          1068
+    PARAM           1076
+    KALMAN          1336
+    VL53L8CX        3628
+メモリグラフを保存: /home/h-tanaka/workspace/crazyflie/crazyflie_rnd_lab/feat#6_task/eval_fig_8x8/log_vl11_10Hz_00_mem.png
+
+CSVに変換: /home/h-tanaka/workspace/crazyflie/crazyflie_rnd_lab/feat#6_task/eval_fig_8x8/csv/log_vl11_15Hz_00.csv  (707 サンプル, 71 列)
+入力: eval_logs_8*8/log_vl11_15Hz_00
+  サンプル数 506, 区間 2.0〜12.0s
+  サンプリング区間 median 988.2 ms
+  task            平均[us]    最大[us]    平均[%]    最大[%]
+  SENSORS          72145     73077     7.30     7.39
+  KALMAN           59016     60293     5.97     6.10
+  ZRANGER2         21585     22447     2.18     2.27
+  FLOW             16520     17980     1.67     1.82
+  VL53L8CX         14072     16616     1.42     1.68
+  USDWRITE          4457      4635     0.45     0.47
+  SYSLINK           2313      2434     0.23     0.25
+  USDLOG             255       286     0.03     0.03
+  CRTP_RX            139       157     0.01     0.02
+  PWRMGNT             77        93     0.01     0.01
+  cpuLoad: 平均 28.1% / 最大 28.5%
+グラフを保存: /home/h-tanaka/workspace/crazyflie/crazyflie_rnd_lab/feat#6_task/eval_fig_8x8/log_vl11_15Hz_00_taskload.png
+  ヒープ: 使用率 平均 80.0% / 最大 80.0%  (最悪の空き 9976 / 50000 byte, 使用率 80.0%)
+  タスク別スタック残量 [byte] (小さい順):
+    APP                0
+    PLATFORM           0
+    STABILIZER         0
+    PWRMGNT          140
+    ZRANGER2         308
+    CRTP_TX          448
+    USBLINK          464
+    CRTP_SRV         476
+    SYSTEM           488
+    IDLE             512
+    SENSORS          580
+    USDLOG           684
+    FLOW             756
+    SYSLINK          828
+    USDWRITE         988
+    CRTP_RX         1000
+    CMDHL           1004
+    MEM             1056
+    LOGT            1060
+    WORKER          1068
+    PARAM           1076
+    KALMAN          1336
+    VL53L8CX        3628
+メモリグラフを保存: /home/h-tanaka/workspace/crazyflie/crazyflie_rnd_lab/feat#6_task/eval_fig_8x8/log_vl11_15Hz_00_mem.png
+
+=== 条件比較 (2〜12s 区間の平均) ===
+  条件              cpuLoad      差    KALMAN      FLOW  ZRANGER2   SENSORS  VL53L8CX    SYSTEM
+  vl11 / 5Hz        28.0%      -     6.08%     2.04%     2.18%     7.30%     0.79%     0.00%
+  vl11 / 10Hz       28.1%      -     6.05%     1.64%     2.18%     7.31%     1.37%     0.00%
+  vl11 / 15Hz       28.1%      -     5.97%     1.67%     2.18%     7.30%     1.42%     0.00%
+比較表を保存: /home/h-tanaka/workspace/crazyflie/crazyflie_rnd_lab/feat#6_task/eval_fig_8x8/compare.csv
+グラフを保存: /home/h-tanaka/workspace/crazyflie/crazyflie_rnd_lab/feat#6_task/eval_fig_8x8/compare_cpuload.png
+グラフを保存: /home/h-tanaka/workspace/crazyflie/crazyflie_rnd_lab/feat#6_task/eval_fig_8x8/compare_tasks.png
