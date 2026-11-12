@@ -21,10 +21,18 @@ CSVは切り出さず全区間を書き出す。出力先は eval_fig/。
 
     # 1本だけ処理 / 切り出す区間を変える
     python3 taskload_plot_eval.py eval_logs/log_vl11_10Hz --tstart 5 --tend 25
+
+    # 別のログ置き場を処理する (出力先は eval_fig_ver2/ になる)
+    python3 taskload_plot_eval.py --logs-dir eval_logs_ver2 --tstart 5 --tend 15
+
+ファイル名が log_vl<個数>_<周波数>Hz のログが2本以上あると、条件ごとの
+平均値を <出力先>/compare.csv に書き出し、cpuLoad 等を周波数ごとに並べた
+compare_*.png を描く。周波数は 5/10/15/20Hz など任意の値に対応する。
 """
 import argparse
 import glob
 import os
+import re
 import sys
 
 import numpy as np
@@ -60,6 +68,37 @@ STACK_TASK_NAMES = [
     "SYSTEM", "CRTP_TX", "CRTP_RX", "SYSLINK", "USBLINK", "LOGT",
     "PARAM", "MEM", "WORKER", "PLATFORM", "CRTP_SRV", "IDLE",
 ]
+
+
+# log_vl<個数>_<周波数>Hz (例: log_vl11_20Hz, log_vl0_0Hz)
+COND_RE = re.compile(r"vl(\d+)_(\d+(?:\.\d+)?)Hz", re.IGNORECASE)
+# 条件比較でタスク別に並べる列
+COMPARE_TASKS = ["KALMAN", "FLOW", "ZRANGER2", "SENSORS", "VL53L8CX", "SYSTEM"]
+
+
+def parse_condition(base):
+    """ログ名から (センサー個数, 周波数[Hz]) を返す。合わなければ None。"""
+    m = COND_RE.search(base)
+    if not m:
+        return None
+    return int(m.group(1)), float(m.group(2))
+
+
+def sort_key(path):
+    """センサー個数 → 周波数の順に並べる (文字列順だと 10Hz が 5Hz より前に来る)。"""
+    base = os.path.basename(path)
+    cond = parse_condition(base)
+    return (0, cond[0], cond[1], base) if cond else (1, 0, 0.0, base)
+
+
+def fig_dir_for(logs_dir):
+    """eval_logs → eval_fig, eval_logs_ver2 → eval_fig_ver2 のように出力先を決める。"""
+    name = os.path.basename(os.path.normpath(logs_dir))
+    if name.startswith("eval_logs"):
+        name = "eval_fig" + name[len("eval_logs"):]
+    else:
+        name = name + "_fig"
+    return os.path.join(os.path.dirname(os.path.normpath(logs_dir)), name)
 
 
 def decode_to_csv(logfile, out_csv, event="fixedFrequency"):
@@ -376,14 +415,122 @@ def summary(df, cols, percent=False):
         print(f"  cpuLoad: 平均 {np.nanmean(v):.1f}% / 最大 {np.nanmax(v):.1f}%")
 
 
+def condition_row(df, base):
+    """比較表の1行分 (区間内の平均値) を返す。"""
+    n, hz = parse_condition(base)
+    row = {"log": base, "sensors": n, "freq_hz": hz}
+    period = df[PREFIX + "period"].to_numpy(dtype=float)
+    cpu = df[PREFIX + "cpuLoad"].to_numpy(dtype=float)
+    row["cpuLoad_mean"] = np.nanmean(cpu)
+    row["cpuLoad_max"] = np.nanmax(cpu)
+    for task in COMPARE_TASKS:
+        c = PREFIX + task
+        if c in df.columns:
+            v = df[c].to_numpy(dtype=float)
+            row[task + "_pct"] = np.nanmean(np.where(period > 0, 100.0 * v / period, np.nan))
+    if "sys.rangingUs" in df.columns:
+        row["rangingUs_mean"] = np.nanmean(df["sys.rangingUs"].to_numpy(dtype=float))
+    if has_mem(df):
+        row["heapFree_min"] = np.nanmin(df[MEM_PREFIX + "heapFree"].to_numpy(dtype=float))
+    if "pm.vbat" in df.columns:
+        row["vbat_mean"] = np.nanmean(df["pm.vbat"].to_numpy(dtype=float))
+    motors = [c for c in ("motor.m1", "motor.m2", "motor.m3", "motor.m4") if c in df.columns]
+    if motors:
+        row["motor_mean"] = np.nanmean(df[motors].to_numpy(dtype=float))
+    return row
+
+
+def write_compare(rows, fig_dir, tstart, tend):
+    """条件ごとの平均値をCSVと表で出し、周波数を横軸にしたグラフを描く。"""
+    import pandas as pd
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    _set_jp_font()
+
+    cmp = pd.DataFrame(rows).sort_values(["sensors", "freq_hz"]).reset_index(drop=True)
+    os.makedirs(fig_dir, exist_ok=True)
+    out_csv = os.path.join(fig_dir, "compare.csv")
+    cmp.to_csv(out_csv, index=False, float_format="%.3f")
+
+    base_rows = cmp[cmp["sensors"] == 0]
+    base_cpu = base_rows["cpuLoad_mean"].mean() if not base_rows.empty else np.nan
+
+    print(f"=== 条件比較 ({tstart:g}〜{tend:g}s 区間の平均) ===")
+    task_cols = [t + "_pct" for t in COMPARE_TASKS if t + "_pct" in cmp.columns]
+    head = f"  {'条件':<14}{'cpuLoad':>9}{'差':>7}" + "".join(f"{c[:-4]:>10}" for c in task_cols)
+    print(head)
+    for _, r in cmp.iterrows():
+        cond = "vl0 (deckなし)" if r["sensors"] == 0 else f"vl{r['sensors']} / {r['freq_hz']:g}Hz"
+        diff = "-" if r["sensors"] == 0 or np.isnan(base_cpu) else f"{r['cpuLoad_mean'] - base_cpu:+.1f}"
+        print(f"  {cond:<14}{r['cpuLoad_mean']:8.1f}%{diff:>7}"
+              + "".join(f"{r[c]:9.2f}%" for c in task_cols))
+    print(f"比較表を保存: {out_csv}")
+
+    deck = cmp[cmp["sensors"] > 0]
+    if deck.empty:
+        return
+    freqs = sorted(deck["freq_hz"].unique())
+    cmap = plt.get_cmap("tab10")
+
+    # cpuLoad vs 周波数 (センサー個数ごとに1本)
+    fig, ax = plt.subplots(figsize=(8, 5))
+    for i, (n, g) in enumerate(deck.groupby("sensors")):
+        ax.plot(g["freq_hz"], g["cpuLoad_mean"], marker="o", color=cmap(i),
+                label=f"vl{n}")
+    if not np.isnan(base_cpu):
+        ax.axhline(base_cpu, color="k", ls="--", lw=1, label="vl0 (deckなし)")
+    ax.set_xticks(freqs)
+    ax.set_xlabel("vl53l8cx 稼働周波数 [Hz]")
+    ax.set_ylabel("cpuLoad 平均 [%]")
+    ax.set_title(f"周波数・センサー個数ごとの cpuLoad ({tstart:g}〜{tend:g}s)")
+    ax.grid(alpha=0.3)
+    ax.legend()
+    fig.tight_layout()
+    out = os.path.join(fig_dir, "compare_cpuload.png")
+    fig.savefig(out, dpi=130)
+    plt.close(fig)
+    print(f"グラフを保存: {out}")
+
+    # タスク別の占有率 vs 周波数
+    if task_cols:
+        ncol = 3
+        nrow = int(np.ceil(len(task_cols) / ncol))
+        fig, axs = plt.subplots(nrow, ncol, figsize=(13, 3.6 * nrow), squeeze=False)
+        for k, c in enumerate(task_cols):
+            a = axs[k // ncol][k % ncol]
+            for i, (n, g) in enumerate(deck.groupby("sensors")):
+                a.plot(g["freq_hz"], g[c], marker="o", color=cmap(i), label=f"vl{n}")
+            if not base_rows.empty:
+                a.axhline(base_rows[c].mean(), color="k", ls="--", lw=1, label="vl0")
+            a.set_xticks(freqs)
+            a.set_title(c[:-4])
+            a.set_xlabel("周波数 [Hz]")
+            a.set_ylabel("CPU占有率 [%]")
+            a.grid(alpha=0.3)
+        for k in range(len(task_cols), nrow * ncol):
+            axs[k // ncol][k % ncol].axis("off")
+        axs[0][0].legend(fontsize=8)
+        fig.suptitle(f"タスク別CPU占有率 ({tstart:g}〜{tend:g}s 区間の平均)")
+        fig.tight_layout()
+        out = os.path.join(fig_dir, "compare_tasks.png")
+        fig.savefig(out, dpi=130)
+        plt.close(fig)
+        print(f"グラフを保存: {out}")
+
+
 def main():
-    global FIG_DIR, CSV_DIR
+    global FIG_DIR, CSV_DIR, LOGS_DIR
     ap = argparse.ArgumentParser(
         description="tasklog をCSVに変換し、タスクごとの実行時間をプロットする")
     ap.add_argument("logs", nargs="*",
                     help="tasklog のバイナリ (例: tasklog01) または変換済みCSV")
     ap.add_argument("--all", action="store_true",
-                    help="eval_logs/ 内のログをすべて処理する")
+                    help="ログ置き場 (--logs-dir) 内のログをすべて処理する")
+    ap.add_argument("--logs-dir", default=None,
+                    help="ログ置き場 (既定 eval_logs/)。出力先は eval_fig<接尾辞>/ になる")
+    ap.add_argument("--no-compare", action="store_true",
+                    help="条件比較 (compare.csv, compare_*.png) を出さない")
     ap.add_argument("--tstart", type=float, default=TSTART_DEFAULT,
                     help=f"切り出し開始時刻 [s] (既定 {TSTART_DEFAULT})")
     ap.add_argument("--tend", type=float, default=TEND_DEFAULT,
@@ -406,6 +553,12 @@ def main():
     ap.add_argument("--fig-dir", default=None, help=f"PNGの出力先 (既定 {FIG_DIR})")
     ap.add_argument("--csv-dir", default=None, help=f"CSVの出力先 (既定 {CSV_DIR})")
     args = ap.parse_args()
+    if args.logs_dir:
+        LOGS_DIR = os.path.abspath(args.logs_dir)
+        if not os.path.isdir(LOGS_DIR):
+            sys.exit(f"ログ置き場がありません: {LOGS_DIR}")
+        FIG_DIR = fig_dir_for(LOGS_DIR)
+        CSV_DIR = os.path.join(FIG_DIR, "csv")
     if args.fig_dir:
         FIG_DIR = os.path.abspath(args.fig_dir)
     if args.csv_dir:
@@ -419,10 +572,12 @@ def main():
         if not found:
             sys.exit(f"ログが見つかりません ({LOGS_DIR})")
         targets = found
+    targets.sort(key=sort_key)
 
     if args.output and len(targets) > 1:
         sys.exit("-o は入力が1件のときだけ使えます")
 
+    rows = []
     for path in targets:
         df, base = load(path, args.event)
         print(f"入力: {path}")
@@ -442,7 +597,12 @@ def main():
             plot_mem(df, base, mem_out, heap_total=args.heap_total)
         elif not args.no_mem:
             print("  (memload.* が無いのでメモリグラフはスキップ)")
+        if parse_condition(base) and (PREFIX + "cpuLoad") in df.columns:
+            rows.append(condition_row(df, base))
         print()
+
+    if not args.no_compare and len(rows) >= 2:
+        write_compare(rows, FIG_DIR, args.tstart, args.tend)
 
 
 if __name__ == "__main__":
